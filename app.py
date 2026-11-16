@@ -90,6 +90,18 @@ def hash_password(password, salt_hex=None):
     return salt.hex(), dk.hex()
 
 
+def check_password(password):
+    """校验面板登录密码（删除等危险操作二次确认用，和登录密码一致）。"""
+    auth = load_auth()
+    if not auth or not password:
+        return False
+    try:
+        _, dk = hash_password(password, auth["salt"])
+        return hmac.compare_digest(dk, auth["hash"])
+    except Exception:
+        return False
+
+
 def make_token(auth):
     exp = int(time.time()) + SESSION_TTL
     sig = hmac.new(bytes.fromhex(auth["secret"]), str(exp).encode(), hashlib.sha256).hexdigest()
@@ -147,12 +159,23 @@ def nginx_settings(store):
             return int(ng.get(key))
         except Exception:
             return dft
-    return {"listen": _int("listen", 400),
-            "panel_port": _int("panel_port", 8550),
-            "redirect": _int("redirect", 800),
-            "self_host": (ng.get("self_host") or "dns.tyokantei.cn").strip(),
-            "cert_file": (ng.get("cert_file") or DEFAULT_CERT).strip(),
-            "key_file": (ng.get("key_file") or DEFAULT_KEY).strip()}
+    st = {"listen": _int("listen", 400),
+          "panel_port": _int("panel_port", 8550),
+          "redirect": _int("redirect", 800),
+          "self_host": (ng.get("self_host") or "dns.tyokantei.cn").strip(),
+          "cert_file": (ng.get("cert_file") or DEFAULT_CERT).strip(),
+          "key_file": (ng.get("key_file") or DEFAULT_KEY).strip()}
+    # 防呆：面板已迁走（当前端口 != 入口端口）时，面板自身端口就是事实，强制对齐
+    if PANEL_PORT != st["listen"]:
+        st["panel_port"] = PANEL_PORT
+    return st
+
+
+def nginx_settings_error(st):
+    """面板自身设置的合法性检查；返回错误文案，空串表示通过。"""
+    if st["self_host"] and "." not in st["self_host"]:
+        return "面板自身域名「%s」不是完整域名，应填如 dns.tyokantei.cn（不要填服务前缀）" % st["self_host"]
+    return ""
 
 
 def nginx_routes(store):
@@ -228,10 +251,139 @@ def nginx_status(store):
             conf = f.read()
     except Exception:
         pass
+    included = None
+    if installed:
+        _, tout = _run(["nginx", "-T"], timeout=20)
+        included = "dnsmgr.conf" in tout
     return {"installed": installed, "active": out.strip() == "active",
             "settings": nginx_settings(store), "routes": nginx_routes(store),
             "panel_port": PANEL_PORT, "conf_exists": bool(conf),
-            "insync": bool(conf) and conf == gen_nginx_conf(store)}
+            "insync": bool(conf) and conf == gen_nginx_conf(store),
+            "included": included}
+
+
+def _apply_nginx(store):
+    """生成 dnsmgr.conf → nginx -t → 重启。返回 (ok, msg, pending)。"""
+    if not nginx_status(store)["installed"]:
+        return False, "nginx 未安装", False
+    err = nginx_settings_error(nginx_settings(store))
+    if err:
+        return False, err + "，请先改好面板自身设置", False
+    conf = gen_nginx_conf(store)
+    try:
+        if os.path.exists(NGINX_GEN_CONF):
+            with open(NGINX_GEN_CONF, encoding="utf-8") as f:
+                old = f.read()
+            bak = NGINX_GEN_CONF + ".bak-" + time.strftime("%Y%m%d%H%M%S")
+            with open(bak, "w", encoding="utf-8") as f:
+                f.write(old)
+        with open(NGINX_GEN_CONF, "w", encoding="utf-8") as f:
+            f.write(conf)
+    except Exception as e:
+        return False, "写配置失败（面板需以 root 运行）：" + str(e), False
+    rc, out = _run(["nginx", "-t"], timeout=30)
+    if rc != 0:
+        return False, "nginx 配置测试未通过：" + out.strip()[-300:], False
+    st = nginx_settings(store)
+    if PANEL_PORT == st["listen"]:
+        return True, "配置已生成并通过测试，但面板正占用入口端口 %d：点「一键切换到 nginx」完成迁移" % st["listen"], True
+    _run(["systemctl", "enable", "nginx"], timeout=30)
+    rc, out = _run(["systemctl", "restart", "nginx"], timeout=60)
+    if rc != 0:
+        return False, "nginx 重启失败：" + out.strip()[-300:], False
+    return True, "nginx 已按新分流表运行", False
+
+
+def _install_nginx():
+    """apt 安装 nginx 到系统标准位置（/usr/sbin/nginx、/etc/nginx）。返回 (ok, msg)。"""
+    _run(["apt-get", "update"], timeout=300)
+    _run(["apt-get", "install", "-y", "nginx", "libnginx-mod-stream"], timeout=600)
+    if os.path.exists("/usr/sbin/nginx"):
+        return True, "nginx 已安装（标准位置 /etc/nginx）"
+    return False, "nginx 安装失败"
+
+
+def _ensure_nginx(store):
+    """一键上线前置：没装先自动装。返回 (ok, steps)。"""
+    if nginx_status(store)["installed"]:
+        return True, []
+    ok, m = _install_nginx()
+    return ok, [m]
+
+
+def _fix_include():
+    """把 dnsmgr.conf 的 include 行加进 nginx.conf（跟在 web.conf 那行后面）。返回 (ok, msg)。"""
+    conf_path = "/etc/nginx/nginx.conf"
+    try:
+        with open(conf_path, encoding="utf-8") as f:
+            text = f.read()
+    except Exception as e:
+        return False, "读 nginx.conf 失败：" + str(e)
+    if "dnsmgr.conf" in text:
+        return True, "include 已存在，无需修复"
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        if "include" in ln and "conf.d/web.conf" in ln:
+            indent = ln[:len(ln) - len(ln.lstrip())]
+            lines.insert(i + 1, indent + "include /etc/nginx/conf.d/dnsmgr.conf;")
+            break
+    else:
+        return False, "nginx.conf 里没找到 web.conf 的 include 行，无法自动修复"
+    try:
+        bak = conf_path + ".bak-" + time.strftime("%Y%m%d%H%M%S")
+        with open(bak, "w", encoding="utf-8") as f:
+            f.write(text)
+        with open(conf_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+    except Exception as e:
+        return False, "写 nginx.conf 失败：" + str(e)
+    rc, out = _run(["nginx", "-t"], timeout=30)
+    if rc != 0:
+        try:
+            with open(conf_path, "w", encoding="utf-8") as f:
+                f.write(text)
+        except Exception:
+            pass
+        return False, "改完配置测试未通过，已回滚：" + out.strip()[-200:]
+    rc, out = _run(["systemctl", "restart", "nginx"], timeout=60)
+    if rc != 0:
+        return False, "include 已加好，但 nginx 重启失败：" + out.strip()[-200:]
+    return True, "已自动补上 include 并重启 nginx"
+
+
+def _push_service(dns, domain, svc):
+    """把一条服务项目的解析记录推到阿里云。返回 (ok, msg)。"""
+    rr = svc.get("rr") or ""
+    try:
+        existing = dns.search(DomainName=domain, RR=rr)["DomainRecords"]["Record"]
+    except Exception as e:
+        return False, "查询阿里云失败：" + str(e)
+    if existing:
+        return True, "阿里云已有该记录"
+    res = dns.add(RR=rr, DomainName=domain, Type=svc.get("type") or "CNAME",
+                  Value=svc.get("value") or "", Line="default", TTL="600")
+    if isinstance(res, dict) and res.get("RequestId"):
+        return True, "已推送到阿里云"
+    return False, (res or {}).get("Message") or (res or {}).get("msg") or "推送失败"
+
+
+def _online_tail(store, steps):
+    """一键上线的后半段：确保 nginx 存在 → 生成配置生效 → include 缺失自动补。
+    steps 会被原地追加。返回 (ok, pending)。"""
+    oke, se = _ensure_nginx(store)
+    steps.extend(se)
+    if not oke:
+        return False, False
+    oka, ma, pending = _apply_nginx(store)
+    steps.append("nginx：" + ma)
+    if not oka:
+        return False, False
+    if not pending and nginx_status(store).get("included") is False:
+        okf, mf = _fix_include()
+        steps.append(mf)
+        if not okf:
+            return False, False
+    return True, pending
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -433,6 +585,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "msg": "档案已保存"})
 
         if path == "/api/profiles/delete":
+            if not check_password(body.get("confirm_password") or ""):
+                return self._send(200, {"ok": False, "msg": "删除需输入面板登录密码确认，密码不对或未输入，已取消"})
             name = body.get("name") or ""
             store["profiles"] = [p for p in store["profiles"] if p["name"] != name]
             save_store(store)
@@ -456,6 +610,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "msg": "模板已保存"})
 
         if path == "/api/templates/delete":
+            if not check_password(body.get("confirm_password") or ""):
+                return self._send(200, {"ok": False, "msg": "删除需输入面板登录密码确认，密码不对或未输入，已取消"})
             name = body.get("name") or ""
             store["templates"] = [t for t in store["templates"] if t["name"] != name]
             save_store(store)
@@ -515,6 +671,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "msg": "项目已保存"})
 
         if path == "/api/services/delete":
+            if not check_password(body.get("confirm_password") or ""):
+                return self._send(200, {"ok": False, "msg": "删除需输入面板登录密码确认，密码不对或未输入，已取消"})
             key = (body.get("domain") or "").strip() + "|" + (body.get("rr") or "").strip()
             store["services"] = [s for s in (store.get("services") or [])
                                  if s["domain"] + "|" + s["rr"] != key]
@@ -531,6 +689,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(200, {"ok": False, "msg": "端口必须是数字"})
             ng["self_host"] = (body.get("self_host") or "").strip()
+            if ng["self_host"] and "." not in ng["self_host"]:
+                return self._send(200, {"ok": False, "msg": "面板自身域名「%s」不是完整域名，应填如 dns.tyokantei.cn（不要填服务前缀），未保存" % ng["self_host"]})
             if body.get("cert_file") is not None:
                 ng["cert_file"] = (body.get("cert_file") or "").strip()
             if body.get("key_file") is not None:
@@ -541,7 +701,12 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     return self._send(200, {"ok": False, "msg": "跳转端口必须是数字"})
             save_store(store)
-            return self._send(200, {"ok": True, "msg": "nginx 设置已保存（点「生成配置并生效」后起作用）"})
+            note = ""
+            eff = nginx_settings(store)
+            posted_pp = (body.get("panel_port") or "")
+            if str(posted_pp).isdigit() and int(posted_pp) != eff["panel_port"]:
+                note = "（面板自身端口已自动对齐为实际端口 %d）" % eff["panel_port"]
+            return self._send(200, {"ok": True, "msg": "nginx 设置已保存（点「生成配置并生效」后起作用）" + note})
 
         if path == "/api/nginx/install":
             _run(["apt-get", "update"], timeout=300)
@@ -551,35 +716,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": False, "msg": "安装失败：" + out.strip()[-300:]})
 
         if path == "/api/nginx/apply":
-            if not nginx_status(store)["installed"]:
-                return self._send(200, {"ok": False, "msg": "nginx 未安装，先点「安装 nginx」"})
-            conf = gen_nginx_conf(store)
-            try:
-                if os.path.exists(NGINX_GEN_CONF):
-                    with open(NGINX_GEN_CONF, encoding="utf-8") as f:
-                        old = f.read()
-                    bak = NGINX_GEN_CONF + ".bak-" + time.strftime("%Y%m%d%H%M%S")
-                    with open(bak, "w", encoding="utf-8") as f:
-                        f.write(old)
-                with open(NGINX_GEN_CONF, "w", encoding="utf-8") as f:
-                    f.write(conf)
-            except Exception as e:
-                return self._send(200, {"ok": False, "msg": "写配置失败（面板需以 root 运行）：" + str(e)})
-            rc, out = _run(["nginx", "-t"], timeout=30)
-            if rc != 0:
-                return self._send(200, {"ok": False, "msg": "nginx 配置测试未通过：" + out.strip()[-300:]})
-            st = nginx_settings(store)
-            if PANEL_PORT == st["listen"]:
-                return self._send(200, {"ok": True, "pending": True,
-                                        "msg": "配置已生成并通过测试，但面板正占用入口端口 %d：点下方「一键切换到 nginx」，面板会自动挪到 %d 并启动 nginx" % (st["listen"], st["panel_port"])})
-            _run(["systemctl", "enable", "nginx"], timeout=30)
-            rc, out = _run(["systemctl", "restart", "nginx"], timeout=60)
-            if rc != 0:
-                return self._send(200, {"ok": False, "msg": "nginx 重启失败：" + out.strip()[-300:]})
-            return self._send(200, {"ok": True, "msg": "已生效：nginx 正按新分流表运行"})
+            ok, m, pending = _apply_nginx(store)
+            if ok and not pending:
+                m = "已生效：" + m
+            return self._send(200, {"ok": ok, "msg": m, "pending": pending})
+
+        if path == "/api/nginx/fix-include":
+            ok, m = _fix_include()
+            return self._send(200, {"ok": ok, "msg": m})
 
         if path == "/api/nginx/migrate":
             st = nginx_settings(store)
+            err = nginx_settings_error(st)
+            if err:
+                return self._send(200, {"ok": False, "msg": err + "，请先改好并保存设置"})
             if PANEL_PORT != st["listen"]:
                 return self._send(200, {"ok": False, "msg": "面板当前不在入口端口 %d 上，无需切换" % st["listen"]})
             if not nginx_status(store)["installed"]:
@@ -658,6 +808,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": ok, "msg": (res or {}).get("msg") or ("更新完成" if ok else "更新失败")})
 
         if path == "/api/delete":
+            if not check_password(body.get("confirm_password") or ""):
+                return self._send(200, {"ok": False, "msg": "删除需输入面板登录密码确认，密码不对或未输入，已取消"})
             rid = (body.get("record_id") or "").strip()
             rr = (body.get("rr") or "").strip()
             rtype = (body.get("type") or "").strip()
@@ -686,14 +838,43 @@ class Handler(BaseHTTPRequestHandler):
                         if s["domain"] == domain and s["rr"] == rr), None)
             if not svc:
                 return self._send(200, {"ok": False, "msg": "项目不存在"})
-            existing = dns.search(DomainName=domain, RR=rr)["DomainRecords"]["Record"]
-            if existing:
-                return self._send(200, {"ok": True, "msg": "阿里云已有该前缀记录，已同步"})
-            res = dns.add(RR=rr, DomainName=domain, Type=svc.get("type") or "CNAME",
-                          Value=svc.get("value") or "", Line="default", TTL="600")
-            if isinstance(res, dict) and res.get("RequestId"):
-                return self._send(200, {"ok": True, "msg": "已推送到阿里云", "record_id": res.get("RecordId")})
-            return self._send(200, {"ok": False, "msg": (res or {}).get("Message") or (res or {}).get("msg") or "推送失败"})
+            ok, m = _push_service(dns, domain, svc)
+            return self._send(200, {"ok": ok, "msg": m})
+
+        if path == "/api/services/online":
+            rr = (body.get("rr") or "").strip()
+            svc = next((s for s in (store.get("services") or [])
+                        if s["domain"] == domain and s["rr"] == rr), None)
+            if not svc:
+                return self._send(200, {"ok": False, "msg": "项目不存在"})
+            steps = []
+            okp, mp = _push_service(dns, domain, svc)
+            steps.append("同步阿里云：" + mp)
+            if not okp:
+                return self._send(200, {"ok": False, "msg": "；".join(steps)})
+            okt, pending = _online_tail(store, steps)
+            return self._send(200, {"ok": okt, "pending": pending, "msg": "；".join(steps)})
+
+        if path == "/api/online-all":
+            steps, bad = [], 0
+            by_domain = {}
+            for s in store.get("services") or []:
+                by_domain.setdefault(s.get("domain") or "", []).append(s)
+            for dmn, svcs in by_domain.items():
+                prof2 = profile_for_domain(store, dmn)
+                if not prof2:
+                    steps.append("%s：没有可用密钥档案，跳过" % dmn)
+                    bad += 1
+                    continue
+                dns2 = dns_client(prof2)
+                for s in svcs:
+                    okp, mp = _push_service(dns2, dmn, s)
+                    steps.append("%s：%s" % (((s.get("rr") or "") + "." + dmn).strip("."), mp))
+                    if not okp:
+                        bad += 1
+            okt, pending = _online_tail(store, steps)
+            return self._send(200, {"ok": okt and bad == 0, "pending": pending,
+                                    "msg": "；".join(steps)})
 
         if path == "/api/set-status":
             rid = (body.get("record_id") or "").strip()
