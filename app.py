@@ -857,6 +857,14 @@ class Handler(BaseHTTPRequestHandler):
             steps.append("同步阿里云：" + mp)
             if not okp:
                 return self._send(200, {"ok": False, "msg": "；".join(steps)})
+            try:
+                recs = dns.search(DomainName=domain, RR=rr)["DomainRecords"]["Record"]
+                if recs and recs[0].get("Status") == "Disable":
+                    res = dns.update(RecordId=recs[0]["RecordId"], DomainName=domain, New_Status="Enable")
+                    if isinstance(res, dict) and res.get("code") == 0:
+                        steps.append("已恢复启用")
+            except Exception:
+                pass
             okt, pending = _online_tail(store, steps)
             if okt:
                 svc["online_at"] = int(time.time())

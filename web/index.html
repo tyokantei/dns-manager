@@ -95,7 +95,7 @@ th{color:var(--dim);font-weight:600}
       <button class="btn ghost" id="svcClearBtn">清空表单</button>
     </div>
     <div class="msg" id="svcMsg"></div>
-    <div class="dim" style="margin-top:14px">已上线的服务（最新生效的在最上面）</div>
+    <div class="dim" style="margin-top:14px">我的服务（最新生效的在最上面）</div>
     <div style="overflow-x:auto">
     <table><thead><tr><th>域名</th><th>内容介绍</th><th>内网地址</th><th>阿里云</th><th>操作</th></tr></thead>
     <tbody id="svcBody"><tr><td colspan="5" class="dim">加载中…</td></tr></tbody></table>
@@ -471,23 +471,18 @@ function renderServices(){
     const addr=(s.lan_ip||'')+(s.lan_port?':'+s.lan_port:'');
     let stat='—', rec=null;
     if(syncMap){ const recs=syncMap[s.rr]||[]; rec=recs[0]||null;
-      stat= rec? (rec.status==='Disable'?'已同步 · 已停用':'已同步 · 启用中') : '未同步'; }
+      stat= rec? (rec.status==='Disable'?'已停止':'已上线') : '未上线'; }
     [fq, s.intro||'—', addr?((s.https?'https://':'http://')+addr):'—', stat].forEach(v=>{ const td=document.createElement('td'); td.textContent=v; tr.appendChild(td); });
     const td=document.createElement('td');
-    if(syncMap&&rec){
-      const tag=document.createElement('span'); tag.style.color='#57d977'; tag.style.fontSize='13px'; tag.textContent='● 已上线';
-      td.append(tag,document.createTextNode(' '));
-    }else{
-      const ob=document.createElement('button'); ob.className='btn sm'; ob.textContent='一键上线';
-      ob.onclick=()=>onlineSvc(s.domain, s.rr);
-      td.append(ob,document.createTextNode(' '));
-    }
-    if(syncMap&&rec){
-      const sb=document.createElement('button'); sb.className='btn ghost sm';
-      const isDis=rec.status==='Disable'; sb.textContent=isDis?'启用':'停用';
-      sb.onclick=async()=>{ const to=isDis?'Enable':'Disable';
-        if(to==='Disable'&&!confirm('停用 '+fq+' ？阿里云同步停用。')) return;
-        const r=await api('/api/set-status',{domain:s.domain,record_id:rec.record_id,status:to});
+    const isDis=!!(rec&&rec.status==='Disable');
+    const ob=document.createElement('button'); ob.className='btn sm'; ob.textContent='一键上线';
+    if(syncMap&&rec&&!isDis){ ob.disabled=true; ob.style.opacity='.45'; ob.title='已经上线了'; }
+    else ob.onclick=()=>onlineSvc(s.domain, s.rr);
+    td.append(ob,document.createTextNode(' '));
+    if(syncMap&&rec&&!isDis){
+      const sb=document.createElement('button'); sb.className='btn ghost sm'; sb.textContent='停止';
+      sb.onclick=async()=>{ if(!confirm('停止 '+fq+' ？解析立即停用，访客打不开；之后点「一键上线」恢复。')) return;
+        const r=await api('/api/set-status',{domain:s.domain,record_id:rec.record_id,status:'Disable'});
         msg('svcMsg',r.msg,r.ok); if(r.ok){ loadSyncStatus(); loadRecords(); } };
       td.append(sb,document.createTextNode(' '));
     }
