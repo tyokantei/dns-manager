@@ -133,6 +133,84 @@ def public_ip():
     return None
 
 
+NGINX_STREAM_CONF = "/etc/nginx/stream.conf"
+NGINX_MAIN_CONF = "/etc/nginx/nginx.conf"
+PANEL_PORT = 8550
+
+
+def nginx_settings(store):
+    ng = store.get("nginx") or {}
+    try:
+        listen = int(ng.get("listen") or 400)
+    except Exception:
+        listen = 400
+    try:
+        panel_port = int(ng.get("panel_port") or 8550)
+    except Exception:
+        panel_port = 8550
+    return {"listen": listen, "panel_port": panel_port,
+            "self_host": (ng.get("self_host") or "dns.tyokantei.cn").strip()}
+
+
+def nginx_routes(store):
+    routes, seen = [], set()
+    for s in store.get("services") or []:
+        ip = (s.get("lan_ip") or "").strip()
+        port = (s.get("lan_port") or "").strip()
+        if not ip or not port:
+            continue
+        host = ((s.get("rr") or "").strip() + "." + (s.get("domain") or "").strip()).strip(".")
+        if not host or host in seen:
+            continue
+        seen.add(host)
+        routes.append({"host": host, "backend": "%s:%s" % (ip, port), "src": "服务项目"})
+    return routes
+
+
+def gen_stream_conf(store):
+    st = nginx_settings(store)
+    routes = nginx_routes(store)
+    hosts = {r["host"] for r in routes}
+    lines = ["stream {",
+             "    map $ssl_preread_server_name $backend {"]
+    for r in routes:
+        lines.append("        %s %s;" % (r["host"], r["backend"]))
+    if st["self_host"] and st["self_host"] not in hosts:
+        lines.append("        %s 127.0.0.1:%d;" % (st["self_host"], st["panel_port"]))
+    lines.append("        default 127.0.0.1:%d;" % st["panel_port"])
+    lines.append("    }")
+    lines.append("    server {")
+    lines.append("        listen %d;" % st["listen"])
+    lines.append("        ssl_preread on;")
+    lines.append("        proxy_pass $backend;")
+    lines.append("    }")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+def _run(cmd, timeout=120):
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, ((p.stdout or "") + (p.stderr or ""))
+    except Exception as e:
+        return -1, str(e)
+
+
+def nginx_status(store):
+    installed = os.path.exists("/usr/sbin/nginx") or _run(["which", "nginx"])[0] == 0
+    rc, out = _run(["systemctl", "is-active", "nginx"], timeout=15)
+    conf = ""
+    try:
+        with open(NGINX_STREAM_CONF, encoding="utf-8") as f:
+            conf = f.read()
+    except Exception:
+        pass
+    return {"installed": installed, "active": out.strip() == "active",
+            "settings": nginx_settings(store), "routes": nginx_routes(store),
+            "panel_port": PANEL_PORT, "conf_exists": bool(conf),
+            "insync": bool(conf) and conf == gen_stream_conf(store)}
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "DnsManager/1.0"
@@ -224,6 +302,10 @@ class Handler(BaseHTTPRequestHandler):
             locks = {k: v for k, v in (store.get("locks") or {}).items()
                      if k.startswith(domain + "|")}
             return self._send(200, {"ok": True, "locks": locks})
+        if path == "/api/nginx/status":
+            st = {"ok": True}
+            st.update(nginx_status(store))
+            return self._send(200, st)
         if path == "/api/services":
             return self._send(200, {"ok": True, "services": store.get("services") or []})
         if path == "/api/sync-status":
@@ -415,6 +497,58 @@ class Handler(BaseHTTPRequestHandler):
             save_store(store)
             return self._send(200, {"ok": True, "msg": "项目已删除（仅删面板清单，阿里云记录不动）"})
 
+        if path == "/api/nginx/settings":
+            ng = store.setdefault("nginx", {})
+            try:
+                if body.get("listen"):
+                    ng["listen"] = int(body["listen"])
+                if body.get("panel_port"):
+                    ng["panel_port"] = int(body["panel_port"])
+            except Exception:
+                return self._send(200, {"ok": False, "msg": "端口必须是数字"})
+            ng["self_host"] = (body.get("self_host") or "").strip()
+            save_store(store)
+            return self._send(200, {"ok": True, "msg": "nginx 设置已保存（点「生成配置并生效」后起作用）"})
+
+        if path == "/api/nginx/install":
+            _run(["apt-get", "update"], timeout=300)
+            rc, out = _run(["apt-get", "install", "-y", "nginx", "libnginx-mod-stream"], timeout=600)
+            if os.path.exists("/usr/sbin/nginx"):
+                return self._send(200, {"ok": True, "msg": "nginx 已安装"})
+            return self._send(200, {"ok": False, "msg": "安装失败：" + out.strip()[-300:]})
+
+        if path == "/api/nginx/apply":
+            if not nginx_status(store)["installed"]:
+                return self._send(200, {"ok": False, "msg": "nginx 未安装，先点「安装 nginx」"})
+            conf = gen_stream_conf(store)
+            try:
+                if os.path.exists(NGINX_STREAM_CONF):
+                    with open(NGINX_STREAM_CONF, encoding="utf-8") as f:
+                        old = f.read()
+                    bak = NGINX_STREAM_CONF + ".bak-" + time.strftime("%Y%m%d%H%M%S")
+                    with open(bak, "w", encoding="utf-8") as f:
+                        f.write(old)
+                with open(NGINX_STREAM_CONF, "w", encoding="utf-8") as f:
+                    f.write(conf)
+                with open(NGINX_MAIN_CONF, encoding="utf-8") as f:
+                    main_conf = f.read()
+                if "stream.conf" not in main_conf:
+                    with open(NGINX_MAIN_CONF, "w", encoding="utf-8") as f:
+                        f.write("include /etc/nginx/stream.conf;\n" + main_conf)
+            except Exception as e:
+                return self._send(200, {"ok": False, "msg": "写配置失败（面板需以 root 运行）：" + str(e)})
+            rc, out = _run(["nginx", "-t"], timeout=30)
+            if rc != 0:
+                return self._send(200, {"ok": False, "msg": "nginx 配置测试未通过：" + out.strip()[-300:]})
+            st = nginx_settings(store)
+            if PANEL_PORT == st["listen"]:
+                return self._send(200, {"ok": True, "pending": True,
+                                        "msg": "配置已生成并通过测试，但面板正占用入口端口 %d：先把面板挪到 %d 并重启 nginx 才能生效（一条命令，见聊天）" % (st["listen"], st["panel_port"])})
+            rc, out = _run(["systemctl", "restart", "nginx"], timeout=60)
+            if rc != 0:
+                return self._send(200, {"ok": False, "msg": "nginx 重启失败：" + out.strip()[-300:]})
+            return self._send(200, {"ok": True, "msg": "已生效：nginx 正按新分流表运行"})
+
         # ---- 以下都需要目标域名 + 对应档案 ----
         domain = (body.get("domain") or "").strip()
         prof = profile_for_domain(store, domain)
@@ -560,6 +694,8 @@ def main():
     ap.add_argument("--port", type=int, default=8550)
     ap.add_argument("--host", default="0.0.0.0")
     args = ap.parse_args()
+    global PANEL_PORT
+    PANEL_PORT = args.port
     os.makedirs(DATA_DIR, exist_ok=True)
     try:
         os.chmod(DATA_DIR, 0o700)

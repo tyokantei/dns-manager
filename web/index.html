@@ -81,6 +81,26 @@ th{color:var(--dim);font-weight:600}
   </div>
 
   <div class="card">
+    <h2>nginx 分流（公网入口）
+      <button class="btn ghost sm" id="ngRefresh" style="float:right">刷新状态</button>
+    </h2>
+    <div class="dim" id="ngStatus">加载中…</div>
+    <div class="row" style="margin-top:10px">
+      <div><label>入口监听端口（小米已转发到本机的）</label><input id="ngListen" type="number"></div>
+      <div><label>面板自身端口（nginx 转给面板的）</label><input id="ngPanelPort" type="number"></div>
+      <div><label>面板自身域名</label><input id="ngSelfHost" placeholder="dns.tyokantei.cn"></div>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn ghost" id="ngSave">保存设置</button>
+      <button class="btn" id="ngApply">生成配置并生效</button>
+      <button class="btn ghost hide" id="ngInstall">安装 nginx</button>
+    </div>
+    <div class="msg" id="ngMsg"></div>
+    <table style="margin-top:8px"><thead><tr><th>域名</th><th>分流到</th><th>来源</th></tr></thead><tbody id="ngRoutes"></tbody></table>
+    <div class="dim">分流表来自「服务项目」里填了内网 IP+端口的条目：在服务项目里保存后，点「生成配置并生效」即可，不用再碰 nginx 配置文件。</div>
+  </div>
+
+  <div class="card">
     <h2>解析记录 <span class="dim" id="recCount"></span>
       <button class="btn ghost sm" id="refreshBtn" style="float:right">同步阿里云</button>
     </h2>
@@ -217,6 +237,7 @@ async function boot(){
   showApp();
   await loadProfiles(); renderTemplates(await loadTemplates());
   await loadServices();
+  loadNginx();
   if(domain()){ loadRecords(); loadSyncStatus(); }
 }
 
@@ -424,7 +445,7 @@ function renderServices(){
       $('sPort').value=s.lan_port||''; $('sType').value=s.type||'CNAME'; $('sValue').value=s.value||''; };
     const db=document.createElement('button'); db.className='btn danger sm'; db.textContent='删除';
     db.onclick=async()=>{ if(!confirm('从清单删除 '+fq+' ？（只删面板清单，阿里云记录不动）')) return;
-      const r=await api('/api/services/delete',{domain:s.domain,rr:s.rr}); msg('svcMsg',r.msg,r.ok); if(r.ok) loadServices(); };
+      const r=await api('/api/services/delete',{domain:s.domain,rr:s.rr}); msg('svcMsg',r.msg,r.ok); if(r.ok){ loadServices(); loadNginx(); } };
     td.append(eb,document.createTextNode(' '),db); tr.appendChild(td); tb.appendChild(tr);
   });
 }
@@ -432,7 +453,7 @@ $('svcSaveBtn').onclick=async()=>{
   const d=domain(); if(!d) return msg('svcMsg','先在顶部选择主域名',false);
   const r=await api('/api/services/save',{domain:d,rr:$('sRr').value.trim(),intro:$('sIntro').value.trim(),
     lan_ip:$('sIp').value.trim(),lan_port:$('sPort').value.trim(),type:$('sType').value,value:$('sValue').value.trim()});
-  msg('svcMsg',r.msg,r.ok); if(r.ok){ loadServices(); loadSyncStatus(); }
+  msg('svcMsg',r.msg,r.ok); if(r.ok){ loadServices(); loadSyncStatus(); loadNginx(); }
 };
 $('svcClearBtn').onclick=()=>{ ['sRr','sIntro','sIp','sPort','sValue'].forEach(id=>$(id).value=''); };
 $('svcSyncBtn').onclick=()=>{ loadSyncStatus(); loadRecords(); msg('svcMsg','已从阿里云同步最新状态',true); };
@@ -440,6 +461,31 @@ $('svcSyncBtn').onclick=()=>{ loadSyncStatus(); loadRecords(); msg('svcMsg','已
 $('refreshBtn').onclick=loadRecords;
 $('recFilter').oninput=renderRecords;
 $('domainSel').onchange=()=>{ endEdit(); preview(); loadRecords(); loadServices(); loadSyncStatus(); };
+async function loadNginx(){
+  try{
+    const r=await api('/api/nginx/status'); if(!r.ok) return;
+    $('ngListen').value=r.settings.listen; $('ngPanelPort').value=r.settings.panel_port; $('ngSelfHost').value=r.settings.self_host||'';
+    $('ngInstall').classList.toggle('hide', !!r.installed);
+    const parts=[];
+    parts.push(r.installed?'nginx 已安装':'nginx 未安装');
+    parts.push(r.active?'运行中':'未运行');
+    parts.push('面板当前端口 '+r.panel_port);
+    if(r.settings.panel_port!==r.panel_port) parts.push('注意：设置里的面板端口是 '+r.settings.panel_port);
+    parts.push(!r.conf_exists?'尚未生成分流配置':(r.insync?'配置与服务项目一致':'配置与服务项目不一致（有变更未生效）'));
+    $('ngStatus').textContent=parts.join(' · ');
+    const tb=$('ngRoutes'); tb.innerHTML='';
+    const rows=(r.routes||[]).slice();
+    if(r.settings.self_host) rows.push({host:r.settings.self_host,backend:'127.0.0.1:'+r.settings.panel_port,src:'面板自身'});
+    rows.push({host:'（其他所有域名）',backend:'127.0.0.1:'+r.settings.panel_port,src:'默认'});
+    rows.forEach(x=>{ const tr=document.createElement('tr');
+      [x.host,x.backend,x.src].forEach(v=>{ const td=document.createElement('td'); td.textContent=v; tr.appendChild(td); });
+      tb.appendChild(tr); });
+  }catch(e){}
+}
+$('ngRefresh').onclick=loadNginx;
+$('ngSave').onclick=async()=>{ const r=await api('/api/nginx/settings',{listen:parseInt($('ngListen').value)||400,panel_port:parseInt($('ngPanelPort').value)||8550,self_host:$('ngSelfHost').value.trim()}); msg('ngMsg',r.msg,r.ok); if(r.ok) loadNginx(); };
+$('ngApply').onclick=async()=>{ if(!confirm('按当前服务项目生成 nginx 分流配置并重启 nginx 生效？')) return; msg('ngMsg','执行中…',true); const r=await api('/api/nginx/apply',{}); msg('ngMsg',r.msg,r.ok); loadNginx(); };
+$('ngInstall').onclick=async()=>{ if(!confirm('在这台机器（edge640）上安装 nginx？')) return; msg('ngMsg','安装中，可能要一两分钟…',true); const r=await api('/api/nginx/install',{}); msg('ngMsg',r.msg,r.ok); loadNginx(); };
 ['fRr','fType','fValue','fLine','fTtl','fLanIp','fLanPort','fIntro'].forEach(id=>{ $(id).addEventListener('input',preview); $(id).addEventListener('change',preview); });
 
 $('batchBtn').onclick=async()=>{
