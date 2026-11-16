@@ -661,9 +661,14 @@ class Handler(BaseHTTPRequestHandler):
             }
             if not svc["domain"] or not svc["rr"]:
                 return self._send(200, {"ok": False, "msg": "主域名和前缀不能为空"})
+            if not svc["intro"]:
+                return self._send(200, {"ok": False, "msg": "内容介绍必填：写清楚这个服务是干什么的"})
             if not svc["value"]:
                 svc["value"] = "tyokantei.3322.org" if svc["type"] == "CNAME" else svc["lan_ip"]
             key = svc["domain"] + "|" + svc["rr"]
+            for s in store.get("services") or []:
+                if s["domain"] + "|" + s["rr"] == key and s.get("online_at"):
+                    svc["online_at"] = s["online_at"]
             store["services"] = [s for s in (store.get("services") or [])
                                  if s["domain"] + "|" + s["rr"] != key]
             store["services"].append(svc)
@@ -853,6 +858,9 @@ class Handler(BaseHTTPRequestHandler):
             if not okp:
                 return self._send(200, {"ok": False, "msg": "；".join(steps)})
             okt, pending = _online_tail(store, steps)
+            if okt:
+                svc["online_at"] = int(time.time())
+                save_store(store)
             return self._send(200, {"ok": okt, "pending": pending, "msg": "；".join(steps)})
 
         if path == "/api/online-all":
