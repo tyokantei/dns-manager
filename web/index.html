@@ -399,7 +399,8 @@ function startEdit(r){
   const svc=services.find(s=>s.domain===domain()&&s.rr===r.RR);
   $('fLanIp').value=svc?(svc.lan_ip||''):''; $('fLanPort').value=svc?(svc.lan_port||''):''; $('fIntro').value=svc?(svc.intro||''):'';
   preview();
-  window.scrollTo({top:0,behavior:'smooth'});
+  $('formTitle').scrollIntoView({behavior:'smooth', block:'start'});
+  $('formTitle').style.color='#ffb86b'; setTimeout(()=>{ $('formTitle').style.color=''; }, 1600);
 }
 function endEdit(){
   editingId=null; $('formTitle').textContent='新增解析记录'; $('saveBtn').textContent='添加记录';
@@ -487,7 +488,9 @@ function renderServices(){
     }
     const eb=document.createElement('button'); eb.className='btn ghost sm'; eb.textContent='编辑';
     eb.onclick=()=>{ $('sRr').value=s.rr; $('sIntro').value=s.intro||''; $('sIp').value=s.lan_ip||'';
-      $('sPort').value=s.lan_port||''; $('sType').value=s.type||'CNAME'; $('sValue').value=s.value||''; $('sHttps').checked=!!s.https; };
+      $('sPort').value=s.lan_port||''; $('sType').value=s.type||'CNAME'; $('sValue').value=s.value||''; $('sHttps').checked=!!s.https;
+      $('sRr').scrollIntoView({behavior:'smooth', block:'center'});
+      mascot('', '正在改「'+fq+'」，内容已填到上面表单，改完点蓝色按钮重新上线。'); };
     const db=document.createElement('button'); db.className='btn danger sm'; db.textContent='删除';
     db.onclick=async()=>{ const pw=await askPassword('从清单删除 '+fq+'（只删面板清单，阿里云记录不动），输入面板登录密码确认：'); if(pw===null) return;
       const r=await api('/api/services/delete',{domain:s.domain,rr:s.rr,confirm_password:pw}); msg('svcMsg',r.msg,r.ok); if(r.ok){ loadServices(); loadNginx(); } };
