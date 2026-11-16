@@ -476,8 +476,8 @@ function renderServices(){
     const td=document.createElement('td');
     const isDis=!!(rec&&rec.status==='Disable');
     const ob=document.createElement('button'); ob.className='btn sm'; ob.textContent='一键上线';
-    if(syncMap&&rec&&!isDis){ ob.disabled=true; ob.style.opacity='.45'; ob.title='已经上线了'; }
-    else ob.onclick=()=>onlineSvc(s.domain, s.rr);
+    ob.onclick=()=>onlineSvc(s.domain, s.rr);
+    if(syncMap&&rec&&!isDis){ ob.style.opacity='.75'; ob.title='已上线；点它可重新同步修复'; }
     td.append(ob,document.createTextNode(' '));
     if(syncMap&&rec&&!isDis){
       const sb=document.createElement('button'); sb.className='btn ghost sm'; sb.textContent='停止';
