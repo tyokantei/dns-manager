@@ -101,10 +101,12 @@ th{color:var(--dim);font-weight:600}
   </div>
 
   <div class="card">
-    <h2>nginx 分流（公网入口）
+    <h2>nginx 分流（公网入口 · 自动管理）
       <button class="btn ghost sm" id="ngRefresh" style="float:right">刷新状态</button>
+      <button class="btn ghost sm" id="ngToggle" style="float:right;margin-right:6px">展开设置</button>
     </h2>
     <div class="dim" id="ngStatus">加载中…</div>
+    <div id="ngBody" class="hide">
     <div class="row" style="margin-top:10px">
       <div><label>入口监听端口（小米已转发到本机的）</label><input id="ngListen" type="number"></div>
       <div><label>面板自身端口（nginx 转给面板的）</label><input id="ngPanelPort" type="number" autocomplete="off"></div>
@@ -126,6 +128,7 @@ th{color:var(--dim);font-weight:600}
     <div class="msg" id="ngMsg"></div>
     <table style="margin-top:8px"><thead><tr><th>域名</th><th>分流到</th><th>来源</th></tr></thead><tbody id="ngRoutes"></tbody></table>
     <div class="dim">分流表来自「服务项目」里填了内网 IP+端口的条目，生成到 /etc/nginx/conf.d/dnsmgr.conf（web.conf 等手写文件不动）；证书统一用 certd 签发的那张。已在手写 conf 里配过的域名不要在面板里重复添加。</div>
+    </div>
   </div>
 
   <div class="card">
@@ -455,7 +458,10 @@ function renderServices(){
   const list=services.filter(s=>!d||s.domain===d);
   const tb=$('svcBody'); tb.innerHTML='';
   if(!list.length){ tb.innerHTML='<tr><td colspan="5" class="dim">还没有项目，在下面表单里加第一个</td></tr>'; return; }
-  list.forEach(s=>{
+  const isSynced=s=>{ if(!syncMap) return true; return (syncMap[s.rr]||[]).length>0; };
+  const shown=list.filter(s=>window._showUnsynced||isSynced(s));
+  const hiddenN=list.length-shown.length;
+  shown.forEach(s=>{
     const tr=document.createElement('tr');
     const fq=(s.rr?s.rr+'.':'')+s.domain;
     const addr=(s.lan_ip||'')+(s.lan_port?':'+s.lan_port:'');
@@ -484,6 +490,11 @@ function renderServices(){
       const r=await api('/api/services/delete',{domain:s.domain,rr:s.rr,confirm_password:pw}); msg('svcMsg',r.msg,r.ok); if(r.ok){ loadServices(); loadNginx(); } };
     td.append(eb,document.createTextNode(' '),db); tr.appendChild(td); tb.appendChild(tr);
   });
+  if(hiddenN>0){ const tr=document.createElement('tr'); const td=document.createElement('td'); td.colSpan=5; td.className='dim';
+    td.textContent='另有 '+hiddenN+' 个还没上线的项目 ';
+    const a=document.createElement('a'); a.href='#'; a.textContent='显示'; a.style.color='#7db4ff';
+    a.onclick=e=>{ e.preventDefault(); window._showUnsynced=true; renderServices(); };
+    td.append(a); tr.appendChild(td); tb.appendChild(tr); }
 }
 function askPassword(text){
   return new Promise(res=>{
@@ -569,6 +580,7 @@ async function loadNginx(){
   }catch(e){}
 }
 $('ngRefresh').onclick=loadNginx;
+$('ngToggle').onclick=()=>{ const hidden=$('ngBody').classList.toggle('hide'); $('ngToggle').textContent=hidden?'展开设置':'收起'; };
 $('ngFixInc').onclick=async()=>{ mascot('working','正在修复 nginx 的 include…'); const r=await api('/api/nginx/fix-include',{}); msg('ngMsg',r.msg,r.ok); mascot(r.ok?'happy':'sad', r.msg); loadNginx(); };
 $('ngSave').onclick=async()=>{ const r=await api('/api/nginx/settings',{listen:parseInt($('ngListen').value)||400,panel_port:parseInt($('ngPanelPort').value)||8550,self_host:$('ngSelfHost').value.trim(),redirect:parseInt($('ngRedirect').value)||0,cert_file:$('ngCert').value.trim(),key_file:$('ngKey').value.trim()}); msg('ngMsg',r.msg,r.ok); if(r.ok) loadNginx(); };
 async function doApply(){ mascot('working','正在生成分流配置并重启 nginx…'); msg('ngMsg','执行中…',true); const r=await api('/api/nginx/apply',{}); msg('ngMsg',r.msg,r.ok); mascot(r.ok?'happy':'sad', r.msg); loadNginx(); }
