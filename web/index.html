@@ -178,7 +178,7 @@ th{color:var(--dim);font-weight:600}
 
 <script>
 const $=id=>document.getElementById(id);
-let editingId=null, records=[], templates=[], profiles=[], notes={}, services=[], syncMap=null;
+let editingId=null, records=[], templates=[], profiles=[], notes={}, locks={}, services=[], syncMap=null;
 async function api(path, body){
   const opt={method: body? 'POST':'GET', headers:{'Content-Type':'application/json'}};
   if(body) opt.body=JSON.stringify(body);
@@ -260,12 +260,16 @@ async function loadRecords(){
   msg('recMsg','加载中…');
   try{
     const nr=await api('/api/notes?domain='+encodeURIComponent(d)); notes=nr.notes||{};
+    const lr=await api('/api/locks?domain='+encodeURIComponent(d)); locks=lr.locks||{};
     const r=await api('/api/records?domain='+encodeURIComponent(d));
     if(!r.ok){ msg('recMsg',r.msg,false); $('recBody').innerHTML='<tr><td colspan="8" class="dim">加载失败</td></tr>'; return; }
     records=r.records||[]; msg('recMsg','',true); renderRecords();
   }catch(e){ msg('recMsg','加载失败',false); }
 }
 function renderRecords(){
+  const fqOf = rr => (rr==='@' ? domain() : rr+'.'+domain());
+  const refCount = {};
+  records.forEach(x=>{ const v=(x.Value||'').replace(/\.$/,'').toLowerCase(); if(v) refCount[v]=(refCount[v]||0)+1; });
   const f=($('recFilter').value||'').toLowerCase();
   const list=records.filter(r=>!f||JSON.stringify(r).toLowerCase().includes(f));
   $('recCount').textContent='（共 '+records.length+' 条）';
@@ -296,9 +300,23 @@ function renderRecords(){
       msg('recMsg',res.msg,res.ok); if(res.ok) loadRecords(); };
     const db=document.createElement('button'); db.className='btn danger sm'; db.textContent='删除';
     db.onclick=async()=>{ if(!confirm('确认删除 '+fqdn(r.RR)+' '+r.Type+' '+r.Value+' ？此操作直接作用于阿里云 DNS。')) return;
-      const res=await api('/api/delete',{domain:domain(),record_id:r.RecordId,rr:r.RR});
+      const res=await api('/api/delete',{domain:domain(),record_id:r.RecordId,rr:r.RR,type:r.Type});
       msg('recMsg',res.msg,res.ok); if(res.ok) loadRecords(); };
-    td.append(eb,document.createTextNode(' '),sb,document.createTextNode(' '),db); tr.appendChild(td); tb.appendChild(tr);
+    const lb=document.createElement('button'); lb.className='btn ghost sm'; lb.textContent=locks[key]?'解锁':'锁定';
+    lb.onclick=async()=>{ const res=await api('/api/locks/save',{domain:domain(),rr:r.RR,type:r.Type,locked:!locks[key]});
+      msg('recMsg',res.msg,res.ok); if(res.ok){ if(locks[key]) delete locks[key]; else locks[key]=true; renderRecords(); } };
+    const fql=fqOf(r.RR).toLowerCase();
+    let refs=refCount[fql]||0;
+    if((r.Value||'').replace(/\.$/,'').toLowerCase()===fql) refs--;
+    const isAcme=r.RR.indexOf('_acme-challenge')===0;
+    const prot=!!locks[key]||refs>0||isAcme;
+    td.append(eb,document.createTextNode(' '),sb,document.createTextNode(' '));
+    if(prot){ const ps=document.createElement('span'); ps.className='dim';
+      ps.textContent=refs>0?('🔒 被'+refs+'条引用'):(isAcme?'🔒 证书校验':'🔒 已锁定');
+      td.append(ps); }
+    else td.append(db);
+    td.append(document.createTextNode(' '),lb);
+    tr.appendChild(td); tb.appendChild(tr);
   });
 }
 function startEdit(r){

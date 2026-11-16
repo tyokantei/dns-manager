@@ -73,6 +73,7 @@ def load_store():
         s.setdefault("profiles", [])
         s.setdefault("templates", [])
         s.setdefault("notes", {})
+        s.setdefault("locks", {})
         s.setdefault("services", [])
         return s
     except Exception:
@@ -218,6 +219,11 @@ class Handler(BaseHTTPRequestHandler):
             notes = {k: v for k, v in (store.get("notes") or {}).items()
                      if k.startswith(domain + "|")}
             return self._send(200, {"ok": True, "notes": notes})
+        if path == "/api/locks":
+            domain = (qs.get("domain") or [""])[0]
+            locks = {k: v for k, v in (store.get("locks") or {}).items()
+                     if k.startswith(domain + "|")}
+            return self._send(200, {"ok": True, "locks": locks})
         if path == "/api/services":
             return self._send(200, {"ok": True, "services": store.get("services") or []})
         if path == "/api/sync-status":
@@ -366,6 +372,21 @@ class Handler(BaseHTTPRequestHandler):
             save_store(store)
             return self._send(200, {"ok": True, "msg": "用途已保存"})
 
+        if path == "/api/locks/save":
+            domain = (body.get("domain") or "").strip()
+            rr = (body.get("rr") or "").strip()
+            rtype = (body.get("type") or "").strip()
+            if not domain or not rr or not rtype:
+                return self._send(200, {"ok": False, "msg": "缺少记录标识"})
+            key = "%s|%s|%s" % (domain, rr, rtype)
+            store.setdefault("locks", {})
+            if body.get("locked"):
+                store["locks"][key] = True
+            else:
+                store["locks"].pop(key, None)
+            save_store(store)
+            return self._send(200, {"ok": True, "msg": "已锁定" if body.get("locked") else "已解锁"})
+
         if path == "/api/services/save":
             svc = {
                 "domain": (body.get("domain") or "").strip(),
@@ -442,8 +463,22 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/delete":
             rid = (body.get("record_id") or "").strip()
             rr = (body.get("rr") or "").strip()
+            rtype = (body.get("type") or "").strip()
             if not rid:
                 return self._send(200, {"ok": False, "msg": "缺少 RecordId"})
+            lkey = "%s|%s|%s" % (domain, rr, rtype)
+            if (store.get("locks") or {}).get(lkey):
+                return self._send(200, {"ok": False, "msg": "该记录已锁定，不能删除（先解锁）"})
+            if rr.startswith("_acme-challenge"):
+                return self._send(200, {"ok": False, "msg": "证书校验记录，受保护，不能删除"})
+            allres = dns.get_all(domain)
+            if allres.get("code") == 0:
+                fq = domain if rr in ("@", "") else rr + "." + domain
+                refs = sum(1 for x in allres["records"]
+                           if (x.get("Value") or "").rstrip(".").lower() == fq.lower()
+                           and x.get("RecordId") != rid)
+                if refs:
+                    return self._send(200, {"ok": False, "msg": "该记录被 %d 条记录引用，不能删除" % refs})
             res = dns.delete(RR=rr, DomainName=domain, RecordId=rid)
             n = len((res or {}).get("record") or [])
             return self._send(200, {"ok": n > 0, "msg": "已删除" if n else "删除失败"})
