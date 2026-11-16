@@ -318,7 +318,7 @@ function renderTemplates(list){
     const ab=document.createElement('button'); ab.className='btn ghost sm'; ab.textContent='套用';
     ab.onclick=()=>{ if(t.domain){ const sel=$('domainSel'); if([...sel.options].some(o=>o.value===t.domain)) sel.value=t.domain; }
       $('fRr').value=t.rr||''; $('fType').value=t.type||'A'; $('fValue').value=t.value||'';
-      $('fLine').value=t.line||'default'; $('fTtl').value=t.ttl||600; preview(); window.scrollTo({top:0,behavior:'smooth'}); };
+      $('fLine').value=t.line||'default'; $('fTtl').value=t.ttl||600; preview(); $('formTitle').scrollIntoView({behavior:'smooth', block:'start'}); };
     const db=document.createElement('button'); db.className='btn danger sm'; db.textContent='删除';
     db.onclick=async()=>{ const pw=await askPassword('删除模板「'+t.name+'」，输入面板登录密码确认：'); if(pw===null) return; await api('/api/templates/delete',{name:t.name,confirm_password:pw}); renderTemplates(await loadTemplates()); };
     td.append(ab,document.createTextNode(' '),db); tr.appendChild(td); tb.appendChild(tr);
