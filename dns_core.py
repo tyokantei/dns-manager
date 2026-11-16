@@ -23,7 +23,7 @@ from base64 import b64encode
 import json
 from datetime import datetime
 from urllib.parse import urlencode, quote_plus, quote
-from urllib import request
+from urllib import request, error
 
 
 class aliDns:
@@ -90,8 +90,15 @@ class aliDns:
         }
         try:
             return self._call(data)
-        except Exception:
-            return {"code": -1, "msg": "获取失败"}
+        except error.HTTPError as e:
+            try:
+                detail = json.loads(e.read().decode("utf-8", "replace"))
+                msg = detail.get("Message") or detail.get("Code") or str(e)
+            except Exception:
+                msg = str(e)
+            return {"code": -1, "msg": "阿里云报错: " + str(msg)}
+        except Exception as e:
+            return {"code": -1, "msg": "请求阿里云失败: " + str(e)[:120]}
 
     def get_all(self, DomainName):
         """拉取指定主域名的全部解析记录（自动翻页），返回记录 dict 列表。"""
