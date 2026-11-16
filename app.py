@@ -133,23 +133,26 @@ def public_ip():
     return None
 
 
-NGINX_STREAM_CONF = "/etc/nginx/stream.conf"
-NGINX_MAIN_CONF = "/etc/nginx/nginx.conf"
+NGINX_GEN_CONF = "/etc/nginx/conf.d/dnsmgr.conf"
 PANEL_PORT = 8550
+DEFAULT_CERT = "/home/snowflyjune/app/certd/data/fullchain.pem"
+DEFAULT_KEY = "/home/snowflyjune/app/certd/data/privkey.pem"
 
 
 def nginx_settings(store):
     ng = store.get("nginx") or {}
-    try:
-        listen = int(ng.get("listen") or 400)
-    except Exception:
-        listen = 400
-    try:
-        panel_port = int(ng.get("panel_port") or 8550)
-    except Exception:
-        panel_port = 8550
-    return {"listen": listen, "panel_port": panel_port,
-            "self_host": (ng.get("self_host") or "dns.tyokantei.cn").strip()}
+
+    def _int(key, dft):
+        try:
+            return int(ng.get(key))
+        except Exception:
+            return dft
+    return {"listen": _int("listen", 400),
+            "panel_port": _int("panel_port", 8550),
+            "redirect": _int("redirect", 800),
+            "self_host": (ng.get("self_host") or "dns.tyokantei.cn").strip(),
+            "cert_file": (ng.get("cert_file") or DEFAULT_CERT).strip(),
+            "key_file": (ng.get("key_file") or DEFAULT_KEY).strip()}
 
 
 def nginx_routes(store):
@@ -163,29 +166,49 @@ def nginx_routes(store):
         if not host or host in seen:
             continue
         seen.add(host)
-        routes.append({"host": host, "backend": "%s:%s" % (ip, port), "src": "服务项目"})
+        routes.append({"host": host, "backend": "%s:%s" % (ip, port),
+                       "scheme": "https" if s.get("https") else "http", "src": "服务项目"})
     return routes
 
 
-def gen_stream_conf(store):
+def _server_block(host, scheme, backend, st):
+    lines = ["server {",
+             "    listen %d ssl;" % st["listen"],
+             "    server_name %s;" % host,
+             "    ssl_certificate %s;" % st["cert_file"],
+             "    ssl_certificate_key %s;" % st["key_file"],
+             "    ssl_session_timeout 5m;",
+             "    ssl_protocols TLSv1.2 TLSv1.3;",
+             "    location / {",
+             "        proxy_set_header HOST $http_host;",
+             "        proxy_set_header X-Forwarded-Proto $scheme;",
+             "        proxy_set_header X-Real-IP $remote_addr;",
+             "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
+             "        proxy_set_header Upgrade $http_upgrade;",
+             "        proxy_set_header Connection upgrade;",
+             "        proxy_pass %s://%s;" % (scheme, backend),
+             "    }",
+             "}"]
+    if st["redirect"]:
+        lines += ["server {",
+                  "    listen %d;" % st["redirect"],
+                  "    server_name %s;" % host,
+                  "    return 301 https://$host:%d$request_uri;" % st["listen"],
+                  "}"]
+    return "\n".join(lines)
+
+
+def gen_nginx_conf(store):
     st = nginx_settings(store)
     routes = nginx_routes(store)
     hosts = {r["host"] for r in routes}
-    lines = ["stream {",
-             "    map $ssl_preread_server_name $backend {"]
+    blocks = ["# 由 DNS Manager 面板生成，请勿手改；手写的服务请放在其他 .conf 文件里"]
     for r in routes:
-        lines.append("        %s %s;" % (r["host"], r["backend"]))
+        blocks.append(_server_block(r["host"], r["scheme"], r["backend"], st))
     if st["self_host"] and st["self_host"] not in hosts:
-        lines.append("        %s 127.0.0.1:%d;" % (st["self_host"], st["panel_port"]))
-    lines.append("        default 127.0.0.1:%d;" % st["panel_port"])
-    lines.append("    }")
-    lines.append("    server {")
-    lines.append("        listen %d;" % st["listen"])
-    lines.append("        ssl_preread on;")
-    lines.append("        proxy_pass $backend;")
-    lines.append("    }")
-    lines.append("}")
-    return "\n".join(lines) + "\n"
+        blocks.append(_server_block(st["self_host"], "https",
+                                    "127.0.0.1:%d" % st["panel_port"], st))
+    return "\n\n".join(blocks) + "\n"
 
 
 def _run(cmd, timeout=120):
@@ -201,14 +224,14 @@ def nginx_status(store):
     rc, out = _run(["systemctl", "is-active", "nginx"], timeout=15)
     conf = ""
     try:
-        with open(NGINX_STREAM_CONF, encoding="utf-8") as f:
+        with open(NGINX_GEN_CONF, encoding="utf-8") as f:
             conf = f.read()
     except Exception:
         pass
     return {"installed": installed, "active": out.strip() == "active",
             "settings": nginx_settings(store), "routes": nginx_routes(store),
             "panel_port": PANEL_PORT, "conf_exists": bool(conf),
-            "insync": bool(conf) and conf == gen_stream_conf(store)}
+            "insync": bool(conf) and conf == gen_nginx_conf(store)}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -478,6 +501,7 @@ class Handler(BaseHTTPRequestHandler):
                 "lan_port": (body.get("lan_port") or "").strip(),
                 "type": (body.get("type") or "CNAME").strip(),
                 "value": (body.get("value") or "").strip(),
+                "https": bool(body.get("https")),
             }
             if not svc["domain"] or not svc["rr"]:
                 return self._send(200, {"ok": False, "msg": "主域名和前缀不能为空"})
@@ -507,6 +531,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 return self._send(200, {"ok": False, "msg": "端口必须是数字"})
             ng["self_host"] = (body.get("self_host") or "").strip()
+            if body.get("cert_file") is not None:
+                ng["cert_file"] = (body.get("cert_file") or "").strip()
+            if body.get("key_file") is not None:
+                ng["key_file"] = (body.get("key_file") or "").strip()
+            if body.get("redirect") is not None:
+                try:
+                    ng["redirect"] = int(body["redirect"])
+                except Exception:
+                    return self._send(200, {"ok": False, "msg": "跳转端口必须是数字"})
             save_store(store)
             return self._send(200, {"ok": True, "msg": "nginx 设置已保存（点「生成配置并生效」后起作用）"})
 
@@ -520,21 +553,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/nginx/apply":
             if not nginx_status(store)["installed"]:
                 return self._send(200, {"ok": False, "msg": "nginx 未安装，先点「安装 nginx」"})
-            conf = gen_stream_conf(store)
+            conf = gen_nginx_conf(store)
             try:
-                if os.path.exists(NGINX_STREAM_CONF):
-                    with open(NGINX_STREAM_CONF, encoding="utf-8") as f:
+                if os.path.exists(NGINX_GEN_CONF):
+                    with open(NGINX_GEN_CONF, encoding="utf-8") as f:
                         old = f.read()
-                    bak = NGINX_STREAM_CONF + ".bak-" + time.strftime("%Y%m%d%H%M%S")
+                    bak = NGINX_GEN_CONF + ".bak-" + time.strftime("%Y%m%d%H%M%S")
                     with open(bak, "w", encoding="utf-8") as f:
                         f.write(old)
-                with open(NGINX_STREAM_CONF, "w", encoding="utf-8") as f:
+                with open(NGINX_GEN_CONF, "w", encoding="utf-8") as f:
                     f.write(conf)
-                with open(NGINX_MAIN_CONF, encoding="utf-8") as f:
-                    main_conf = f.read()
-                if "stream.conf" not in main_conf:
-                    with open(NGINX_MAIN_CONF, "w", encoding="utf-8") as f:
-                        f.write("include /etc/nginx/stream.conf;\n" + main_conf)
             except Exception as e:
                 return self._send(200, {"ok": False, "msg": "写配置失败（面板需以 root 运行）：" + str(e)})
             rc, out = _run(["nginx", "-t"], timeout=30)

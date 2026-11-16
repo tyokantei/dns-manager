@@ -73,6 +73,7 @@ th{color:var(--dim);font-weight:600}
       <div><label>记录类型</label><select id="sType"><option>CNAME</option><option>A</option></select></div>
       <div><label>记录值（CNAME 默认 DDNS 域名，可改）</label><input id="sValue" placeholder="tyokantei.3322.org"></div>
     </div>
+    <div style="margin-top:8px"><label style="display:inline"><input type="checkbox" id="sHttps" style="width:auto"> 后端是 HTTPS（如 Nano 面板 8443、访客 8445；普通 http 服务不勾）</label></div>
     <div style="margin-top:10px;display:flex;gap:8px">
       <button class="btn" id="svcSaveBtn">保存项目</button>
       <button class="btn ghost" id="svcClearBtn">清空表单</button>
@@ -90,6 +91,11 @@ th{color:var(--dim);font-weight:600}
       <div><label>面板自身端口（nginx 转给面板的）</label><input id="ngPanelPort" type="number"></div>
       <div><label>面板自身域名</label><input id="ngSelfHost" placeholder="dns.tyokantei.cn"></div>
     </div>
+    <div class="row">
+      <div><label>HTTP 跳转端口（0 = 不生成跳转）</label><input id="ngRedirect" type="number"></div>
+      <div><label>证书文件（certd 签发的 fullchain）</label><input id="ngCert"></div>
+      <div><label>私钥文件（certd 的 privkey）</label><input id="ngKey"></div>
+    </div>
     <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn ghost" id="ngSave">保存设置</button>
       <button class="btn" id="ngApply">生成配置并生效</button>
@@ -97,7 +103,7 @@ th{color:var(--dim);font-weight:600}
     </div>
     <div class="msg" id="ngMsg"></div>
     <table style="margin-top:8px"><thead><tr><th>域名</th><th>分流到</th><th>来源</th></tr></thead><tbody id="ngRoutes"></tbody></table>
-    <div class="dim">分流表来自「服务项目」里填了内网 IP+端口的条目：在服务项目里保存后，点「生成配置并生效」即可，不用再碰 nginx 配置文件。</div>
+    <div class="dim">分流表来自「服务项目」里填了内网 IP+端口的条目，生成到 /etc/nginx/conf.d/dnsmgr.conf（web.conf 等手写文件不动）；证书统一用 certd 签发的那张。已在手写 conf 里配过的域名不要在面板里重复添加。</div>
   </div>
 
   <div class="card">
@@ -423,7 +429,7 @@ function renderServices(){
     let stat='—', rec=null;
     if(syncMap){ const recs=syncMap[s.rr]||[]; rec=recs[0]||null;
       stat= rec? (rec.status==='Disable'?'已同步 · 已停用':'已同步 · 启用中') : '未同步'; }
-    [fq, s.intro||'—', addr||'—', stat].forEach(v=>{ const td=document.createElement('td'); td.textContent=v; tr.appendChild(td); });
+    [fq, s.intro||'—', addr?((s.https?'https://':'http://')+addr):'—', stat].forEach(v=>{ const td=document.createElement('td'); td.textContent=v; tr.appendChild(td); });
     const td=document.createElement('td');
     if(syncMap&&!rec){
       const pb=document.createElement('button'); pb.className='btn sm'; pb.textContent='推送到阿里云';
@@ -442,7 +448,7 @@ function renderServices(){
     }
     const eb=document.createElement('button'); eb.className='btn ghost sm'; eb.textContent='编辑';
     eb.onclick=()=>{ $('sRr').value=s.rr; $('sIntro').value=s.intro||''; $('sIp').value=s.lan_ip||'';
-      $('sPort').value=s.lan_port||''; $('sType').value=s.type||'CNAME'; $('sValue').value=s.value||''; };
+      $('sPort').value=s.lan_port||''; $('sType').value=s.type||'CNAME'; $('sValue').value=s.value||''; $('sHttps').checked=!!s.https; };
     const db=document.createElement('button'); db.className='btn danger sm'; db.textContent='删除';
     db.onclick=async()=>{ if(!confirm('从清单删除 '+fq+' ？（只删面板清单，阿里云记录不动）')) return;
       const r=await api('/api/services/delete',{domain:s.domain,rr:s.rr}); msg('svcMsg',r.msg,r.ok); if(r.ok){ loadServices(); loadNginx(); } };
@@ -452,10 +458,10 @@ function renderServices(){
 $('svcSaveBtn').onclick=async()=>{
   const d=domain(); if(!d) return msg('svcMsg','先在顶部选择主域名',false);
   const r=await api('/api/services/save',{domain:d,rr:$('sRr').value.trim(),intro:$('sIntro').value.trim(),
-    lan_ip:$('sIp').value.trim(),lan_port:$('sPort').value.trim(),type:$('sType').value,value:$('sValue').value.trim()});
+    lan_ip:$('sIp').value.trim(),lan_port:$('sPort').value.trim(),type:$('sType').value,value:$('sValue').value.trim(),https:$('sHttps').checked});
   msg('svcMsg',r.msg,r.ok); if(r.ok){ loadServices(); loadSyncStatus(); loadNginx(); }
 };
-$('svcClearBtn').onclick=()=>{ ['sRr','sIntro','sIp','sPort','sValue'].forEach(id=>$(id).value=''); };
+$('svcClearBtn').onclick=()=>{ ['sRr','sIntro','sIp','sPort','sValue'].forEach(id=>$(id).value=''); $('sHttps').checked=false; };
 $('svcSyncBtn').onclick=()=>{ loadSyncStatus(); loadRecords(); msg('svcMsg','已从阿里云同步最新状态',true); };
 
 $('refreshBtn').onclick=loadRecords;
@@ -465,6 +471,7 @@ async function loadNginx(){
   try{
     const r=await api('/api/nginx/status'); if(!r.ok) return;
     $('ngListen').value=r.settings.listen; $('ngPanelPort').value=r.settings.panel_port; $('ngSelfHost').value=r.settings.self_host||'';
+    $('ngRedirect').value=r.settings.redirect; $('ngCert').value=r.settings.cert_file||''; $('ngKey').value=r.settings.key_file||'';
     $('ngInstall').className = r.installed? 'btn ghost hide' : 'btn';
     $('ngApply').textContent = !r.installed? '生成配置并生效' : (!r.active? '运行 nginx（生成配置并启动）' : (r.insync? '重新生成配置并生效' : '生成配置并生效'));
     const parts=[];
@@ -475,16 +482,15 @@ async function loadNginx(){
     parts.push(!r.conf_exists?'尚未生成分流配置':(r.insync?'配置与服务项目一致':'配置与服务项目不一致（有变更未生效）'));
     $('ngStatus').textContent=parts.join(' · ');
     const tb=$('ngRoutes'); tb.innerHTML='';
-    const rows=(r.routes||[]).slice();
-    if(r.settings.self_host) rows.push({host:r.settings.self_host,backend:'127.0.0.1:'+r.settings.panel_port,src:'面板自身'});
-    rows.push({host:'（其他所有域名）',backend:'127.0.0.1:'+r.settings.panel_port,src:'默认'});
+    const rows=(r.routes||[]).map(x=>({host:x.host,backend:(x.scheme||'http')+'://'+x.backend,src:x.src}));
+    if(r.settings.self_host) rows.push({host:r.settings.self_host,backend:'https://127.0.0.1:'+r.settings.panel_port,src:'面板自身'});
     rows.forEach(x=>{ const tr=document.createElement('tr');
       [x.host,x.backend,x.src].forEach(v=>{ const td=document.createElement('td'); td.textContent=v; tr.appendChild(td); });
       tb.appendChild(tr); });
   }catch(e){}
 }
 $('ngRefresh').onclick=loadNginx;
-$('ngSave').onclick=async()=>{ const r=await api('/api/nginx/settings',{listen:parseInt($('ngListen').value)||400,panel_port:parseInt($('ngPanelPort').value)||8550,self_host:$('ngSelfHost').value.trim()}); msg('ngMsg',r.msg,r.ok); if(r.ok) loadNginx(); };
+$('ngSave').onclick=async()=>{ const r=await api('/api/nginx/settings',{listen:parseInt($('ngListen').value)||400,panel_port:parseInt($('ngPanelPort').value)||8550,self_host:$('ngSelfHost').value.trim(),redirect:parseInt($('ngRedirect').value)||0,cert_file:$('ngCert').value.trim(),key_file:$('ngKey').value.trim()}); msg('ngMsg',r.msg,r.ok); if(r.ok) loadNginx(); };
 async function doApply(){ msg('ngMsg','执行中…',true); const r=await api('/api/nginx/apply',{}); msg('ngMsg',r.msg,r.ok); loadNginx(); }
 $('ngApply').onclick=async()=>{ if(!confirm('按当前服务项目生成 nginx 分流配置并启动/重启 nginx 生效？')) return; doApply(); };
 $('ngInstall').onclick=async()=>{ if(!confirm('在这台机器（edge640）上安装 nginx？')) return; msg('ngMsg','安装中，可能要一两分钟…',true); const r=await api('/api/nginx/install',{}); msg('ngMsg',r.msg,r.ok); if(r.ok) doApply(); else loadNginx(); };
