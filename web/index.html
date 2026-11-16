@@ -100,6 +100,7 @@ th{color:var(--dim);font-weight:600}
       <button class="btn ghost" id="ngSave">保存设置</button>
       <button class="btn" id="ngApply">生成配置并生效</button>
       <button class="btn ghost hide" id="ngInstall">安装 nginx</button>
+      <button class="btn hide" id="ngMigrate">一键切换到 nginx</button>
     </div>
     <div class="msg" id="ngMsg"></div>
     <table style="margin-top:8px"><thead><tr><th>域名</th><th>分流到</th><th>来源</th></tr></thead><tbody id="ngRoutes"></tbody></table>
@@ -473,6 +474,7 @@ async function loadNginx(){
     $('ngListen').value=r.settings.listen; $('ngPanelPort').value=r.settings.panel_port; $('ngSelfHost').value=r.settings.self_host||'';
     $('ngRedirect').value=r.settings.redirect; $('ngCert').value=r.settings.cert_file||''; $('ngKey').value=r.settings.key_file||'';
     $('ngInstall').className = r.installed? 'btn ghost hide' : 'btn';
+    $('ngMigrate').classList.toggle('hide', !(r.installed && r.panel_port===r.settings.listen));
     $('ngApply').textContent = !r.installed? '生成配置并生效' : (!r.active? '运行 nginx（生成配置并启动）' : (r.insync? '重新生成配置并生效' : '生成配置并生效'));
     const parts=[];
     parts.push(r.installed?'nginx 已安装':'nginx 未安装');
@@ -494,6 +496,7 @@ $('ngSave').onclick=async()=>{ const r=await api('/api/nginx/settings',{listen:p
 async function doApply(){ msg('ngMsg','执行中…',true); const r=await api('/api/nginx/apply',{}); msg('ngMsg',r.msg,r.ok); loadNginx(); }
 $('ngApply').onclick=async()=>{ if(!confirm('按当前服务项目生成 nginx 分流配置并启动/重启 nginx 生效？')) return; doApply(); };
 $('ngInstall').onclick=async()=>{ if(!confirm('在这台机器（edge640）上安装 nginx？')) return; msg('ngMsg','安装中，可能要一两分钟…',true); const r=await api('/api/nginx/install',{}); msg('ngMsg',r.msg,r.ok); if(r.ok) doApply(); else loadNginx(); };
+$('ngMigrate').onclick=async()=>{ if(!confirm('一键切换：面板将重启到设置里的面板端口，nginx 接管入口端口，页面会断开。继续？')) return; msg('ngMsg','切换中，页面即将断开…',true); const r=await api('/api/nginx/migrate',{}); msg('ngMsg',r.msg,r.ok); };
 ['fRr','fType','fValue','fLine','fTtl','fLanIp','fLanPort','fIntro'].forEach(id=>{ $(id).addEventListener('input',preview); $(id).addEventListener('change',preview); });
 
 $('batchBtn').onclick=async()=>{

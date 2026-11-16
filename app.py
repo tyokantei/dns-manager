@@ -571,12 +571,46 @@ class Handler(BaseHTTPRequestHandler):
             st = nginx_settings(store)
             if PANEL_PORT == st["listen"]:
                 return self._send(200, {"ok": True, "pending": True,
-                                        "msg": "配置已生成并通过测试，但面板正占用入口端口 %d：先把面板挪到 %d 并重启 nginx 才能生效（一条命令，见聊天）" % (st["listen"], st["panel_port"])})
+                                        "msg": "配置已生成并通过测试，但面板正占用入口端口 %d：点下方「一键切换到 nginx」，面板会自动挪到 %d 并启动 nginx" % (st["listen"], st["panel_port"])})
             _run(["systemctl", "enable", "nginx"], timeout=30)
             rc, out = _run(["systemctl", "restart", "nginx"], timeout=60)
             if rc != 0:
                 return self._send(200, {"ok": False, "msg": "nginx 重启失败：" + out.strip()[-300:]})
             return self._send(200, {"ok": True, "msg": "已生效：nginx 正按新分流表运行"})
+
+        if path == "/api/nginx/migrate":
+            st = nginx_settings(store)
+            if PANEL_PORT != st["listen"]:
+                return self._send(200, {"ok": False, "msg": "面板当前不在入口端口 %d 上，无需切换" % st["listen"]})
+            if not nginx_status(store)["installed"]:
+                return self._send(200, {"ok": False, "msg": "nginx 未安装，先点「安装 nginx」"})
+            conf = gen_nginx_conf(store)
+            try:
+                if os.path.exists(NGINX_GEN_CONF):
+                    with open(NGINX_GEN_CONF, encoding="utf-8") as f:
+                        old = f.read()
+                    bak = NGINX_GEN_CONF + ".bak-" + time.strftime("%Y%m%d%H%M%S")
+                    with open(bak, "w", encoding="utf-8") as f:
+                        f.write(old)
+                with open(NGINX_GEN_CONF, "w", encoding="utf-8") as f:
+                    f.write(conf)
+            except Exception as e:
+                return self._send(200, {"ok": False, "msg": "写配置失败（面板需以 root 运行）：" + str(e)})
+            rc, out = _run(["nginx", "-t"], timeout=30)
+            if rc != 0:
+                return self._send(200, {"ok": False, "msg": "nginx 配置测试未通过：" + out.strip()[-300:]})
+            script = ("sleep 2; kill %d; sleep 1; "
+                      "cd %s && nohup %s %s --port %d > /tmp/dnsmgr-panel.log 2>&1 & "
+                      "systemctl enable nginx; systemctl restart nginx") % (
+                          os.getpid(), BASE, sys.executable,
+                          os.path.join(BASE, "app.py"), st["panel_port"])
+            try:
+                with open("/tmp/dnsmgr-migrate.log", "ab") as lf:
+                    subprocess.Popen(["bash", "-c", script], stdout=lf, stderr=lf,
+                                     start_new_session=True)
+            except Exception as e:
+                return self._send(200, {"ok": False, "msg": "启动切换失败：" + str(e)})
+            return self._send(200, {"ok": True, "msg": "正在切换：面板重启到 %d，nginx 接管 %d。约 5 秒后用 https://%s:%d 重新打开面板（局域网直连端口 %d）" % (st["panel_port"], st["listen"], st["self_host"] or "dns.tyokantei.cn", st["listen"], st["panel_port"])})
 
         # ---- 以下都需要目标域名 + 对应档案 ----
         domain = (body.get("domain") or "").strip()
