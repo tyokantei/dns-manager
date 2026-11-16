@@ -63,8 +63,8 @@ th{color:var(--dim);font-weight:600}
     </h2>
     <input id="recFilter" placeholder="按前缀 / 类型 / 记录值过滤…">
     <div style="overflow-x:auto;margin-top:8px">
-    <table><thead><tr><th>主机记录</th><th>类型</th><th>记录值</th><th>线路</th><th>TTL</th><th>状态</th><th>操作</th></tr></thead>
-    <tbody id="recBody"><tr><td colspan="7" class="dim">选择主域名后自动加载</td></tr></tbody></table>
+    <table><thead><tr><th>主机记录</th><th>类型</th><th>记录值</th><th>线路</th><th>TTL</th><th>状态</th><th>用途</th><th>操作</th></tr></thead>
+    <tbody id="recBody"><tr><td colspan="8" class="dim">选择主域名后自动加载</td></tr></tbody></table>
     </div>
     <div class="msg" id="recMsg"></div>
   </div>
@@ -155,7 +155,7 @@ th{color:var(--dim);font-weight:600}
 
 <script>
 const $=id=>document.getElementById(id);
-let editingId=null, records=[], templates=[], profiles=[];
+let editingId=null, records=[], templates=[], profiles=[], notes={};
 async function api(path, body){
   const opt={method: body? 'POST':'GET', headers:{'Content-Type':'application/json'}};
   if(body) opt.body=JSON.stringify(body);
@@ -232,11 +232,12 @@ function renderTemplates(list){
 }
 
 async function loadRecords(){
-  const d=domain(); if(!d){ $('recBody').innerHTML='<tr><td colspan="7" class="dim">先在「设置」里给密钥档案填写管辖域名</td></tr>'; return; }
+  const d=domain(); if(!d){ $('recBody').innerHTML='<tr><td colspan="8" class="dim">先在「设置」里给密钥档案填写管辖域名</td></tr>'; return; }
   msg('recMsg','加载中…');
   try{
+    const nr=await api('/api/notes?domain='+encodeURIComponent(d)); notes=nr.notes||{};
     const r=await api('/api/records?domain='+encodeURIComponent(d));
-    if(!r.ok){ msg('recMsg',r.msg,false); $('recBody').innerHTML='<tr><td colspan="7" class="dim">加载失败</td></tr>'; return; }
+    if(!r.ok){ msg('recMsg',r.msg,false); $('recBody').innerHTML='<tr><td colspan="8" class="dim">加载失败</td></tr>'; return; }
     records=r.records||[]; msg('recMsg','',true); renderRecords();
   }catch(e){ msg('recMsg','加载失败',false); }
 }
@@ -245,10 +246,20 @@ function renderRecords(){
   const list=records.filter(r=>!f||JSON.stringify(r).toLowerCase().includes(f));
   $('recCount').textContent='（共 '+records.length+' 条）';
   const tb=$('recBody'); tb.innerHTML='';
-  if(!list.length){ tb.innerHTML='<tr><td colspan="7" class="dim">没有记录</td></tr>'; return; }
+  if(!list.length){ tb.innerHTML='<tr><td colspan="8" class="dim">没有记录</td></tr>'; return; }
   list.forEach(r=>{
     const tr=document.createElement('tr');
     [r.RR, r.Type, r.Value, r.Line, r.TTL, r.Status||'Enable'].forEach(v=>{ const td=document.createElement('td'); td.textContent=v; tr.appendChild(td); });
+    const ntd=document.createElement('td');
+    const key=domain()+'|'+r.RR+'|'+r.Type;
+    const nspan=document.createElement('span'); nspan.textContent=notes[key]||'';
+    const nb=document.createElement('button'); nb.className='btn ghost sm'; nb.textContent=notes[key]?'改':'＋注';
+    nb.onclick=async()=>{ const v=prompt('用途注释（'+fqdn(r.RR)+' '+r.Type+'，留空 = 清除）：', notes[key]||'');
+      if(v===null) return;
+      const res=await api('/api/notes/save',{domain:domain(),rr:r.RR,type:r.Type,note:v.trim()});
+      msg('recMsg',res.msg,res.ok);
+      if(res.ok){ if(v.trim()) notes[key]=v.trim(); else delete notes[key]; renderRecords(); } };
+    ntd.append(nspan,document.createTextNode(' '),nb); tr.appendChild(ntd);
     const td=document.createElement('td');
     const eb=document.createElement('button'); eb.className='btn ghost sm'; eb.textContent='修改';
     eb.onclick=()=>startEdit(r);

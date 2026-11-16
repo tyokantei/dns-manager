@@ -72,9 +72,10 @@ def load_store():
             s = json.load(f)
         s.setdefault("profiles", [])
         s.setdefault("templates", [])
+        s.setdefault("notes", {})
         return s
     except Exception:
-        return {"profiles": [], "templates": list(DEFAULT_TEMPLATES)}
+        return {"profiles": [], "templates": list(DEFAULT_TEMPLATES), "notes": {}}
 
 
 def save_store(s):
@@ -211,6 +212,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True, "profiles": out})
         if path == "/api/templates":
             return self._send(200, {"ok": True, "templates": store["templates"]})
+        if path == "/api/notes":
+            domain = (qs.get("domain") or [""])[0]
+            notes = {k: v for k, v in (store.get("notes") or {}).items()
+                     if k.startswith(domain + "|")}
+            return self._send(200, {"ok": True, "notes": notes})
         if path == "/api/records":
             domain = (qs.get("domain") or [""])[0]
             prof = profile_for_domain(store, domain)
@@ -325,6 +331,22 @@ class Handler(BaseHTTPRequestHandler):
             store["templates"] = [t for t in store["templates"] if t["name"] != name]
             save_store(store)
             return self._send(200, {"ok": True, "msg": "模板已删除"})
+
+        if path == "/api/notes/save":
+            domain = (body.get("domain") or "").strip()
+            rr = (body.get("rr") or "").strip()
+            rtype = (body.get("type") or "").strip()
+            note = (body.get("note") or "").strip()
+            if not domain or not rr or not rtype:
+                return self._send(200, {"ok": False, "msg": "缺少记录标识"})
+            key = "%s|%s|%s" % (domain, rr, rtype)
+            store.setdefault("notes", {})
+            if note:
+                store["notes"][key] = note
+            else:
+                store["notes"].pop(key, None)
+            save_store(store)
+            return self._send(200, {"ok": True, "msg": "用途已保存"})
 
         # ---- 以下都需要目标域名 + 对应档案 ----
         domain = (body.get("domain") or "").strip()
