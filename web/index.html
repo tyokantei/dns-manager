@@ -109,6 +109,11 @@ th{color:var(--dim);font-weight:600}
       </select></div>
       <div><label>TTL（秒）</label><input id="fTtl" type="number" value="600" min="60"></div>
     </div>
+    <div class="row">
+      <div><label>内网 IP（服务落点，可空）</label><input id="fLanIp" placeholder="192.168.31.144"></div>
+      <div><label>内网端口（可空）</label><input id="fLanPort" placeholder="如 8098"></div>
+      <div><label>内容介绍（可空）</label><input id="fIntro" placeholder="这个服务是干什么的"></div>
+    </div>
     <label>解析预览</label>
     <div class="preview" id="preview">—</div>
     <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
@@ -325,13 +330,16 @@ function startEdit(r){
   $('saveBtn').textContent='保存修改';
   $('cancelEditBtn').classList.remove('hide');
   $('fRr').value=r.RR==='@'?'':r.RR; $('fType').value=r.Type; $('fValue').value=r.Value;
-  $('fLine').value=r.Line||'default'; $('fTtl').value=r.TTL||600; preview();
+  $('fLine').value=r.Line||'default'; $('fTtl').value=r.TTL||600;
+  const svc=services.find(s=>s.domain===domain()&&s.rr===r.RR);
+  $('fLanIp').value=svc?(svc.lan_ip||''):''; $('fLanPort').value=svc?(svc.lan_port||''):''; $('fIntro').value=svc?(svc.intro||''):'';
+  preview();
   window.scrollTo({top:0,behavior:'smooth'});
 }
 function endEdit(){
   editingId=null; $('formTitle').textContent='新增解析记录'; $('saveBtn').textContent='添加记录';
   $('cancelEditBtn').classList.add('hide');
-  $('fRr').value=''; $('fValue').value=''; preview();
+  $('fRr').value=''; $('fValue').value=''; $('fLanIp').value=''; $('fLanPort').value=''; $('fIntro').value=''; preview();
 }
 function formData(){
   return {domain:domain(), rr:$('fRr').value.trim(), type:$('fType').value,
@@ -339,7 +347,9 @@ function formData(){
 }
 function preview(){
   const v=formData();
-  $('preview').textContent = domain()? (fqdn(v.rr||'@')+'  '+v.type+' · '+(v.value||'…')+' · '+v.line+' · TTL '+v.ttl) : '（先在顶部选择主域名）';
+  const ip=$('fLanIp').value.trim(), port=$('fLanPort').value.trim();
+  const lan=(ip||port)? ('  → 内网 '+(ip||'…')+(port?':'+port:'')) : '';
+  $('preview').textContent = domain()? (fqdn(v.rr||'@')+'  '+v.type+' · '+(v.value||'…')+' · '+v.line+' · TTL '+v.ttl+lan) : '（先在顶部选择主域名）';
 }
 
 $('saveBtn').onclick=async()=>{
@@ -350,7 +360,14 @@ $('saveBtn').onclick=async()=>{
   try{
     const r= editingId? await api('/api/update',Object.assign(v,{record_id:editingId})) : await api('/api/add',v);
     msg('formMsg',r.msg,r.ok);
-    if(r.ok){ endEdit(); loadRecords(); }
+    if(r.ok){
+      const ip=$('fLanIp').value.trim(), port=$('fLanPort').value.trim(), intro=$('fIntro').value.trim();
+      if(ip||port||intro){
+        await api('/api/services/save',{domain:v.domain,rr:v.rr,intro:intro,lan_ip:ip,lan_port:port,type:v.type,value:v.value});
+        loadServices(); loadSyncStatus();
+      }
+      endEdit(); loadRecords();
+    }
   }catch(e){ msg('formMsg','请求失败',false); }
   $('saveBtn').disabled=false;
 };
@@ -423,7 +440,7 @@ $('svcSyncBtn').onclick=()=>{ loadSyncStatus(); loadRecords(); msg('svcMsg','已
 $('refreshBtn').onclick=loadRecords;
 $('recFilter').oninput=renderRecords;
 $('domainSel').onchange=()=>{ endEdit(); preview(); loadRecords(); loadServices(); loadSyncStatus(); };
-['fRr','fType','fValue','fLine','fTtl'].forEach(id=>{ $(id).addEventListener('input',preview); $(id).addEventListener('change',preview); });
+['fRr','fType','fValue','fLine','fTtl','fLanIp','fLanPort','fIntro'].forEach(id=>{ $(id).addEventListener('input',preview); $(id).addEventListener('change',preview); });
 
 $('batchBtn').onclick=async()=>{
   const rrs=$('bRrs').value.split('\n').map(s=>s.trim()).filter(Boolean);
