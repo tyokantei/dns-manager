@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DNS Manager</title>
+<style>
+:root{--bg:#0f141b;--card:#171e28;--line:#26303e;--txt:#dbe4ee;--dim:#8fa1b3;--acc:#3b82f6;--ok:#34d399;--bad:#f87171}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+a{color:var(--acc)}
+header{display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+header h1{font-size:17px;margin:0}
+header .sp{flex:1}
+main{max-width:1080px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+.card h2{font-size:15px;margin:0 0 10px}
+label{display:block;color:var(--dim);font-size:12px;margin:8px 0 3px}
+input,select,textarea{background:#0d1219;border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:7px 9px;width:100%;font:inherit}
+textarea{resize:vertical}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.btn{background:var(--acc);color:#fff;border:0;border-radius:6px;padding:7px 14px;cursor:pointer;font:inherit}
+.btn.ghost{background:transparent;border:1px solid var(--line);color:var(--txt)}
+.btn.danger{background:#b91c1c}
+.btn.sm{padding:3px 9px;font-size:12px}
+.btn:disabled{opacity:.5;cursor:default}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;word-break:break-all}
+th{color:var(--dim);font-weight:600}
+.preview{background:#0d1219;border:1px dashed var(--line);border-radius:8px;padding:10px 12px;font-family:ui-monospace,Consolas,monospace;font-size:13px}
+.msg{min-height:20px;margin-top:8px;font-size:13px}
+.msg.ok{color:var(--ok)}.msg.bad{color:var(--bad)}
+.dim{color:var(--dim)}
+.center{max-width:380px;margin:12vh auto}
+.hide{display:none}
+.tag{display:inline-block;border:1px solid var(--line);border-radius:20px;padding:0 8px;font-size:12px;color:var(--dim)}
+</style>
+</head>
+<body>
+
+<div id="gate" class="center card hide">
+  <h2 id="gateTitle">DNS Manager 登录</h2>
+  <label id="gateLabel">面板密码</label>
+  <input id="gatePw" type="password" autocomplete="current-password">
+  <div style="margin-top:12px"><button class="btn" id="gateBtn" style="width:100%">进入</button></div>
+  <div class="msg" id="gateMsg"></div>
+</div>
+
+<div id="app" class="hide">
+<header>
+  <h1>DNS Manager</h1>
+  <span class="tag">通用模板 · 不写死域名</span>
+  <div class="sp"></div>
+  <label style="margin:0">主域名
+    <select id="domainSel" style="width:auto;display:inline-block"></select>
+  </label>
+  <button class="btn ghost sm" id="logoutBtn">退出</button>
+</header>
+<main>
+  <div class="card">
+    <h2>解析记录 <span class="dim" id="recCount"></span>
+      <button class="btn ghost sm" id="refreshBtn" style="float:right">刷新</button>
+    </h2>
+    <input id="recFilter" placeholder="按前缀 / 类型 / 记录值过滤…">
+    <div style="overflow-x:auto;margin-top:8px">
+    <table><thead><tr><th>主机记录</th><th>类型</th><th>记录值</th><th>线路</th><th>TTL</th><th>状态</th><th>操作</th></tr></thead>
+    <tbody id="recBody"><tr><td colspan="7" class="dim">选择主域名后自动加载</td></tr></tbody></table>
+    </div>
+    <div class="msg" id="recMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2 id="formTitle">新增解析记录</h2>
+    <div class="row">
+      <div><label>二级域名前缀（自定义，可空 = 根域名）</label><input id="fRr" placeholder="如 jeston"></div>
+      <div><label>记录类型</label><select id="fType">
+        <option>A</option><option>AAAA</option><option>CNAME</option><option>TXT</option>
+        <option>MX</option><option>NS</option><option>SRV</option><option>CAA</option>
+      </select></div>
+      <div><label>记录值</label><input id="fValue" placeholder="IP 或目标域名"></div>
+      <div><label>解析线路</label><select id="fLine">
+        <option value="default">默认线路</option><option value="telecom">中国电信</option>
+        <option value="unicom">中国联通</option><option value="mobile">中国移动</option>
+        <option value="oversea">境外</option><option value="edu">中国教育网</option>
+        <option value="search">搜索引擎</option><option value="internal">中国地区</option>
+      </select></div>
+      <div><label>TTL（秒）</label><input id="fTtl" type="number" value="600" min="60"></div>
+    </div>
+    <label>解析预览</label>
+    <div class="preview" id="preview">—</div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" id="saveBtn">添加记录</button>
+      <button class="btn ghost hide" id="cancelEditBtn">取消编辑</button>
+      <button class="btn ghost" id="tplSaveBtn">存为模板</button>
+    </div>
+    <div class="msg" id="formMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>模板库</h2>
+    <table><thead><tr><th>模板名称</th><th>前缀示例</th><th>类型</th><th>记录值</th><th>操作</th></tr></thead>
+    <tbody id="tplBody"></tbody></table>
+    <div class="msg" id="tplMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>批量新增</h2>
+    <div class="row">
+      <div style="grid-column:span 2"><label>前缀列表（一行一个）</label>
+        <textarea id="bRrs" rows="4" placeholder="nas&#10;media&#10;remote"></textarea></div>
+      <div><label>记录类型</label><select id="bType"><option>A</option><option>AAAA</option><option>CNAME</option><option>TXT</option><option>MX</option></select></div>
+      <div><label>记录值（共用）</label><input id="bValue" placeholder="IP 或目标域名"></div>
+      <div><label>TTL（秒）</label><input id="bTtl" type="number" value="600" min="60"></div>
+    </div>
+    <div style="margin-top:10px"><button class="btn" id="batchBtn">批量添加</button></div>
+    <div class="msg" id="batchMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>动态 IP 更新（只更新指定 A 记录）</h2>
+    <div class="row">
+      <div><label>二级域名前缀</label><input id="dRr" placeholder="如 jeston"></div>
+      <div><label>新 IP</label><input id="dValue" placeholder="点右侧按钮自动获取"></div>
+      <div><label>&nbsp;</label><button class="btn ghost" id="pubIpBtn" style="width:100%">获取当前公网 IP</button></div>
+    </div>
+    <div style="margin-top:10px"><button class="btn" id="ddnsBtn">更新这条记录</button></div>
+    <div class="msg" id="ddnsMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>设置 · 密钥档案（可多个账号）</h2>
+    <div id="profList"></div>
+    <div class="row">
+      <div><label>档案名</label><input id="pName" placeholder="如 snow / 安琪"></div>
+      <div><label>AccessKeyId</label><input id="pKid" autocomplete="off"></div>
+      <div><label>AccessSecret（编辑时留空 = 不改）</label><input id="pSecret" type="password" autocomplete="off"></div>
+      <div><label>管辖主域名（逗号分隔）</label><input id="pDomains" placeholder="tyokantei.cn"></div>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:8px">
+      <button class="btn" id="profSaveBtn">保存档案</button>
+      <button class="btn ghost" id="profNewBtn">清空表单（新建）</button>
+    </div>
+    <div class="msg" id="profMsg"></div>
+    <hr style="border-color:var(--line)">
+    <div class="row">
+      <div><label>修改面板密码 · 旧密码</label><input id="cpOld" type="password"></div>
+      <div><label>新密码</label><input id="cpNew" type="password"></div>
+      <div><label>&nbsp;</label><button class="btn ghost" id="cpBtn" style="width:100%">修改密码</button></div>
+    </div>
+    <div class="msg" id="cpMsg"></div>
+  </div>
+  <p class="dim" style="text-align:center">后端复用 demo.py 的 aliDns 类 · 自签名 HTTPS · 请勿把本面板端口转发到公网</p>
+</main>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+let editingId=null, records=[], templates=[], profiles=[];
+async function api(path, body){
+  const opt={method: body? 'POST':'GET', headers:{'Content-Type':'application/json'}};
+  if(body) opt.body=JSON.stringify(body);
+  const r=await fetch(path,opt);
+  if(r.status===401){ showGate(false); throw new Error('未登录'); }
+  return r.json();
+}
+function msg(id,text,ok){ const e=$(id); e.textContent=text||''; e.className='msg '+(ok===true?'ok':ok===false?'bad':''); }
+function domain(){ return $('domainSel').value; }
+function fqdn(rr){ const d=domain(); if(!d) return rr||''; return (!rr||rr==='@')? d : rr+'.'+d; }
+
+function showGate(setup){
+  $('app').classList.add('hide'); $('gate').classList.remove('hide');
+  $('gateTitle').textContent = setup? '首次使用 · 设置面板密码':'DNS Manager 登录';
+  $('gateLabel').textContent = setup? '设置一个面板密码（至少 6 位）':'面板密码';
+  $('gateBtn').textContent = setup? '设置并进入':'进入';
+  $('gateBtn').onclick=async()=>{
+    const pw=$('gatePw').value;
+    try{
+      const r=await api(setup? '/api/setup':'/api/login',{password:pw});
+      if(r.ok){ $('gatePw').value=''; boot(); } else msg('gateMsg',r.msg||'失败',false);
+    }catch(e){ msg('gateMsg','网络错误',false); }
+  };
+}
+function showApp(){ $('gate').classList.add('hide'); $('app').classList.remove('hide'); }
+
+async function boot(){
+  const me=await (await fetch('/api/me')).json();
+  if(me.setup) return showGate(true);
+  if(!me.authed) return showGate(false);
+  showApp();
+  await loadProfiles(); renderTemplates(await loadTemplates());
+  if(domain()) loadRecords();
+}
+
+async function loadProfiles(){
+  const r=await api('/api/profiles'); profiles=r.profiles||[];
+  const sel=$('domainSel'); const cur=sel.value; sel.innerHTML='';
+  const all=[];
+  profiles.forEach(p=>p.domains.forEach(d=>{ if(!all.includes(d)) all.push(d); }));
+  all.forEach(d=>{ const o=document.createElement('option'); o.value=d; o.textContent=d; sel.appendChild(o); });
+  if(cur&&all.includes(cur)) sel.value=cur;
+  const box=$('profList'); box.innerHTML='';
+  if(!profiles.length) box.innerHTML='<p class="dim">还没有密钥档案，先在下面添加一个。</p>';
+  profiles.forEach(p=>{
+    const div=document.createElement('div');
+    div.innerHTML='<b></b> <span class="dim"></span> ';
+    div.querySelector('b').textContent=p.name;
+    div.querySelector('span').textContent='Key '+p.key_id_masked+' · 域名： '+(p.domains.join(', ')||'（未填）');
+    const eb=document.createElement('button'); eb.className='btn ghost sm'; eb.textContent='编辑';
+    eb.onclick=()=>{ $('pName').value=p.name; $('pKid').value=''; $('pSecret').value=''; $('pDomains').value=p.domains.join(','); msg('profMsg','编辑中：AccessKeyId/Secret 留空表示不修改（如需改请填写）'); };
+    const db=document.createElement('button'); db.className='btn danger sm'; db.textContent='删除';
+    db.onclick=async()=>{ if(!confirm('确认删除档案「'+p.name+'」？')) return; const r=await api('/api/profiles/delete',{name:p.name}); msg('profMsg',r.msg,r.ok); loadProfiles(); };
+    div.append(eb,document.createTextNode(' '),db);
+    box.appendChild(div);
+  });
+}
+
+async function loadTemplates(){ const r=await api('/api/templates'); return r.templates||[]; }
+function renderTemplates(list){
+  templates=list; const tb=$('tplBody'); tb.innerHTML='';
+  list.forEach(t=>{
+    const tr=document.createElement('tr');
+    [t.name, t.rr||'(空)', t.type, t.value||'—'].forEach(v=>{ const td=document.createElement('td'); td.textContent=v; tr.appendChild(td); });
+    const td=document.createElement('td');
+    const ab=document.createElement('button'); ab.className='btn ghost sm'; ab.textContent='套用';
+    ab.onclick=()=>{ if(t.domain){ const sel=$('domainSel'); if([...sel.options].some(o=>o.value===t.domain)) sel.value=t.domain; }
+      $('fRr').value=t.rr||''; $('fType').value=t.type||'A'; $('fValue').value=t.value||'';
+      $('fLine').value=t.line||'default'; $('fTtl').value=t.ttl||600; preview(); window.scrollTo({top:0,behavior:'smooth'}); };
+    const db=document.createElement('button'); db.className='btn danger sm'; db.textContent='删除';
+    db.onclick=async()=>{ if(!confirm('确认删除模板「'+t.name+'」？')) return; await api('/api/templates/delete',{name:t.name}); renderTemplates(await loadTemplates()); };
+    td.append(ab,document.createTextNode(' '),db); tr.appendChild(td); tb.appendChild(tr);
+  });
+}
+
+async function loadRecords(){
+  const d=domain(); if(!d){ $('recBody').innerHTML='<tr><td colspan="7" class="dim">先在「设置」里给密钥档案填写管辖域名</td></tr>'; return; }
+  msg('recMsg','加载中…');
+  try{
+    const r=await api('/api/records?domain='+encodeURIComponent(d));
+    if(!r.ok){ msg('recMsg',r.msg,false); $('recBody').innerHTML='<tr><td colspan="7" class="dim">加载失败</td></tr>'; return; }
+    records=r.records||[]; msg('recMsg','',true); renderRecords();
+  }catch(e){ msg('recMsg','加载失败',false); }
+}
+function renderRecords(){
+  const f=($('recFilter').value||'').toLowerCase();
+  const list=records.filter(r=>!f||JSON.stringify(r).toLowerCase().includes(f));
+  $('recCount').textContent='（共 '+records.length+' 条）';
+  const tb=$('recBody'); tb.innerHTML='';
+  if(!list.length){ tb.innerHTML='<tr><td colspan="7" class="dim">没有记录</td></tr>'; return; }
+  list.forEach(r=>{
+    const tr=document.createElement('tr');
+    [r.RR, r.Type, r.Value, r.Line, r.TTL, r.Status||'Enable'].forEach(v=>{ const td=document.createElement('td'); td.textContent=v; tr.appendChild(td); });
+    const td=document.createElement('td');
+    const eb=document.createElement('button'); eb.className='btn ghost sm'; eb.textContent='修改';
+    eb.onclick=()=>startEdit(r);
+    const db=document.createElement('button'); db.className='btn danger sm'; db.textContent='删除';
+    db.onclick=async()=>{ if(!confirm('确认删除 '+fqdn(r.RR)+' '+r.Type+' '+r.Value+' ？此操作直接作用于阿里云 DNS。')) return;
+      const res=await api('/api/delete',{domain:domain(),record_id:r.RecordId,rr:r.RR});
+      msg('recMsg',res.msg,res.ok); if(res.ok) loadRecords(); };
+    td.append(eb,document.createTextNode(' '),db); tr.appendChild(td); tb.appendChild(tr);
+  });
+}
+function startEdit(r){
+  editingId=r.RecordId;
+  $('formTitle').textContent='修改解析记录';
+  $('saveBtn').textContent='保存修改';
+  $('cancelEditBtn').classList.remove('hide');
+  $('fRr').value=r.RR==='@'?'':r.RR; $('fType').value=r.Type; $('fValue').value=r.Value;
+  $('fLine').value=r.Line||'default'; $('fTtl').value=r.TTL||600; preview();
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function endEdit(){
+  editingId=null; $('formTitle').textContent='新增解析记录'; $('saveBtn').textContent='添加记录';
+  $('cancelEditBtn').classList.add('hide');
+  $('fRr').value=''; $('fValue').value=''; preview();
+}
+function formData(){
+  return {domain:domain(), rr:$('fRr').value.trim(), type:$('fType').value,
+    value:$('fValue').value.trim(), line:$('fLine').value, ttl:parseInt($('fTtl').value)||600};
+}
+function preview(){
+  const v=formData();
+  $('preview').textContent = domain()? (fqdn(v.rr||'@')+'  '+v.type+' · '+(v.value||'…')+' · '+v.line+' · TTL '+v.ttl) : '（先在顶部选择主域名）';
+}
+
+$('saveBtn').onclick=async()=>{
+  const v=formData();
+  if(!v.domain) return msg('formMsg','先选择主域名',false);
+  if(!v.value) return msg('formMsg','记录值不能为空',false);
+  $('saveBtn').disabled=true;
+  try{
+    const r= editingId? await api('/api/update',Object.assign(v,{record_id:editingId})) : await api('/api/add',v);
+    msg('formMsg',r.msg,r.ok);
+    if(r.ok){ endEdit(); loadRecords(); }
+  }catch(e){ msg('formMsg','请求失败',false); }
+  $('saveBtn').disabled=false;
+};
+$('cancelEditBtn').onclick=endEdit;
+$('tplSaveBtn').onclick=async()=>{
+  const name=prompt('模板名称：'); if(!name) return;
+  const v=formData(); v.name=name;
+  const r=await api('/api/templates/save',v); msg('formMsg',r.msg,r.ok);
+  if(r.ok) renderTemplates(await loadTemplates());
+};
+$('refreshBtn').onclick=loadRecords;
+$('recFilter').oninput=renderRecords;
+$('domainSel').onchange=()=>{ endEdit(); preview(); loadRecords(); };
+['fRr','fType','fValue','fLine','fTtl'].forEach(id=>{ $(id).addEventListener('input',preview); $(id).addEventListener('change',preview); });
+
+$('batchBtn').onclick=async()=>{
+  const rrs=$('bRrs').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  const r=await api('/api/batch-add',{domain:domain(),rrs,type:$('bType').value,value:$('bValue').value.trim(),line:'default',ttl:parseInt($('bTtl').value)||600});
+  if(!r.ok) return msg('batchMsg',r.msg,false);
+  msg('batchMsg', r.results.map(x=>x.rr+': '+(x.ok?'成功':x.msg)).join('；'), r.results.every(x=>x.ok));
+  loadRecords();
+};
+$('pubIpBtn').onclick=async()=>{ const r=await api('/api/public-ip'); if(r.ok) $('dValue').value=r.ip; else msg('ddnsMsg',r.msg,false); };
+$('ddnsBtn').onclick=async()=>{
+  const r=await api('/api/ddns-update',{domain:domain(),rr:$('dRr').value.trim(),value:$('dValue').value.trim()});
+  msg('ddnsMsg',r.msg,r.ok); if(r.ok) loadRecords();
+};
+$('profSaveBtn').onclick=async()=>{
+  const domains=$('pDomains').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const r=await api('/api/profiles/save',{name:$('pName').value.trim(),key_id:$('pKid').value.trim(),key_secret:$('pSecret').value.trim(),domains});
+  msg('profMsg',r.msg,r.ok); if(r.ok){ $('pSecret').value=''; loadProfiles(); if(domain()) loadRecords(); }
+};
+$('profNewBtn').onclick=()=>{ $('pName').value=''; $('pKid').value=''; $('pSecret').value=''; $('pDomains').value=''; };
+$('cpBtn').onclick=async()=>{ const r=await api('/api/change-password',{old:$('cpOld').value,new:$('cpNew').value}); msg('cpMsg',r.msg,r.ok); };
+$('logoutBtn').onclick=async()=>{ await api('/api/logout',{}); location.reload(); };
+$('gatePw').addEventListener('keydown',e=>{ if(e.key==='Enter') $('gateBtn').click(); });
+
+boot();
+</script>
+</body>
+</html>

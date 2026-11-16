@@ -1,0 +1,14 @@
+[Unit]
+Description=DNS Manager (Aliyun DNS panel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/dns-manager
+ExecStart=/opt/python3.10/bin/python3 /root/dns-manager/app.py --port 8550
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
