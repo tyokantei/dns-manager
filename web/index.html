@@ -462,7 +462,7 @@ function renderServices(){
   const tb=$('svcBody'); tb.innerHTML='';
   if(!list.length){ tb.innerHTML='<tr><td colspan="5" class="dim">还没有项目，在上面表单里加第一个</td></tr>'; return; }
   const isSynced=s=>{ if(!syncMap) return true; return (syncMap[s.rr]||[]).length>0; };
-  const shown=list.filter(s=>window._showUnsynced||isSynced(s));
+  const shown=list.slice().reverse().filter(s=>window._showUnsynced||isSynced(s));
   shown.sort((a,b)=>(b.online_at||0)-(a.online_at||0));
   const hiddenN=list.length-shown.length;
   shown.forEach(s=>{
@@ -474,9 +474,14 @@ function renderServices(){
       stat= rec? (rec.status==='Disable'?'已同步 · 已停用':'已同步 · 启用中') : '未同步'; }
     [fq, s.intro||'—', addr?((s.https?'https://':'http://')+addr):'—', stat].forEach(v=>{ const td=document.createElement('td'); td.textContent=v; tr.appendChild(td); });
     const td=document.createElement('td');
-    const ob=document.createElement('button'); ob.className='btn sm'; ob.textContent='一键上线';
-    ob.onclick=()=>onlineSvc(s.domain, s.rr);
-    td.append(ob,document.createTextNode(' '));
+    if(syncMap&&rec){
+      const tag=document.createElement('span'); tag.style.color='#57d977'; tag.style.fontSize='13px'; tag.textContent='● 已上线';
+      td.append(tag,document.createTextNode(' '));
+    }else{
+      const ob=document.createElement('button'); ob.className='btn sm'; ob.textContent='一键上线';
+      ob.onclick=()=>onlineSvc(s.domain, s.rr);
+      td.append(ob,document.createTextNode(' '));
+    }
     if(syncMap&&rec){
       const sb=document.createElement('button'); sb.className='btn ghost sm';
       const isDis=rec.status==='Disable'; sb.textContent=isDis?'启用':'停用';
