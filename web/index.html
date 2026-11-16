@@ -465,7 +465,8 @@ async function loadNginx(){
   try{
     const r=await api('/api/nginx/status'); if(!r.ok) return;
     $('ngListen').value=r.settings.listen; $('ngPanelPort').value=r.settings.panel_port; $('ngSelfHost').value=r.settings.self_host||'';
-    $('ngInstall').classList.toggle('hide', !!r.installed);
+    $('ngInstall').className = r.installed? 'btn ghost hide' : 'btn';
+    $('ngApply').textContent = !r.installed? '生成配置并生效' : (!r.active? '运行 nginx（生成配置并启动）' : (r.insync? '重新生成配置并生效' : '生成配置并生效'));
     const parts=[];
     parts.push(r.installed?'nginx 已安装':'nginx 未安装');
     parts.push(r.active?'运行中':'未运行');
@@ -484,8 +485,9 @@ async function loadNginx(){
 }
 $('ngRefresh').onclick=loadNginx;
 $('ngSave').onclick=async()=>{ const r=await api('/api/nginx/settings',{listen:parseInt($('ngListen').value)||400,panel_port:parseInt($('ngPanelPort').value)||8550,self_host:$('ngSelfHost').value.trim()}); msg('ngMsg',r.msg,r.ok); if(r.ok) loadNginx(); };
-$('ngApply').onclick=async()=>{ if(!confirm('按当前服务项目生成 nginx 分流配置并重启 nginx 生效？')) return; msg('ngMsg','执行中…',true); const r=await api('/api/nginx/apply',{}); msg('ngMsg',r.msg,r.ok); loadNginx(); };
-$('ngInstall').onclick=async()=>{ if(!confirm('在这台机器（edge640）上安装 nginx？')) return; msg('ngMsg','安装中，可能要一两分钟…',true); const r=await api('/api/nginx/install',{}); msg('ngMsg',r.msg,r.ok); loadNginx(); };
+async function doApply(){ msg('ngMsg','执行中…',true); const r=await api('/api/nginx/apply',{}); msg('ngMsg',r.msg,r.ok); loadNginx(); }
+$('ngApply').onclick=async()=>{ if(!confirm('按当前服务项目生成 nginx 分流配置并启动/重启 nginx 生效？')) return; doApply(); };
+$('ngInstall').onclick=async()=>{ if(!confirm('在这台机器（edge640）上安装 nginx？')) return; msg('ngMsg','安装中，可能要一两分钟…',true); const r=await api('/api/nginx/install',{}); msg('ngMsg',r.msg,r.ok); if(r.ok) doApply(); else loadNginx(); };
 ['fRr','fType','fValue','fLine','fTtl','fLanIp','fLanPort','fIntro'].forEach(id=>{ $(id).addEventListener('input',preview); $(id).addEventListener('change',preview); });
 
 $('batchBtn').onclick=async()=>{

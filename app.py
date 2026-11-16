@@ -544,6 +544,7 @@ class Handler(BaseHTTPRequestHandler):
             if PANEL_PORT == st["listen"]:
                 return self._send(200, {"ok": True, "pending": True,
                                         "msg": "配置已生成并通过测试，但面板正占用入口端口 %d：先把面板挪到 %d 并重启 nginx 才能生效（一条命令，见聊天）" % (st["listen"], st["panel_port"])})
+            _run(["systemctl", "enable", "nginx"], timeout=30)
             rc, out = _run(["systemctl", "restart", "nginx"], timeout=60)
             if rc != 0:
                 return self._send(200, {"ok": False, "msg": "nginx 重启失败：" + out.strip()[-300:]})
