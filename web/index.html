@@ -249,7 +249,7 @@ function renderRecords(){
   if(!list.length){ tb.innerHTML='<tr><td colspan="8" class="dim">没有记录</td></tr>'; return; }
   list.forEach(r=>{
     const tr=document.createElement('tr');
-    [r.RR, r.Type, r.Value, r.Line, r.TTL, r.Status||'Enable'].forEach(v=>{ const td=document.createElement('td'); td.textContent=v; tr.appendChild(td); });
+    [r.RR, r.Type, r.Value, r.Line, r.TTL, (r.Status==='Disable'?'已停用':'启用中')].forEach(v=>{ const td=document.createElement('td'); td.textContent=v; tr.appendChild(td); });
     const ntd=document.createElement('td');
     const key=domain()+'|'+r.RR+'|'+r.Type;
     const nspan=document.createElement('span'); nspan.textContent=notes[key]||'';
@@ -263,11 +263,18 @@ function renderRecords(){
     const td=document.createElement('td');
     const eb=document.createElement('button'); eb.className='btn ghost sm'; eb.textContent='修改';
     eb.onclick=()=>startEdit(r);
+    const sb=document.createElement('button'); sb.className='btn ghost sm';
+    const isDis=r.Status==='Disable';
+    sb.textContent=isDis?'启用':'停用';
+    sb.onclick=async()=>{ const to=isDis?'Enable':'Disable';
+      if(to==='Disable'&&!confirm('停用 '+fqdn(r.RR)+' ？停用后该条立即停止解析，阿里云同步停用（可随时再启用）。')) return;
+      const res=await api('/api/set-status',{domain:domain(),record_id:r.RecordId,status:to});
+      msg('recMsg',res.msg,res.ok); if(res.ok) loadRecords(); };
     const db=document.createElement('button'); db.className='btn danger sm'; db.textContent='删除';
     db.onclick=async()=>{ if(!confirm('确认删除 '+fqdn(r.RR)+' '+r.Type+' '+r.Value+' ？此操作直接作用于阿里云 DNS。')) return;
       const res=await api('/api/delete',{domain:domain(),record_id:r.RecordId,rr:r.RR});
       msg('recMsg',res.msg,res.ok); if(res.ok) loadRecords(); };
-    td.append(eb,document.createTextNode(' '),db); tr.appendChild(td); tb.appendChild(tr);
+    td.append(eb,document.createTextNode(' '),sb,document.createTextNode(' '),db); tr.appendChild(td); tb.appendChild(tr);
   });
 }
 function startEdit(r){

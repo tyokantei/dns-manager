@@ -402,6 +402,17 @@ class Handler(BaseHTTPRequestHandler):
             n = len((res or {}).get("record") or [])
             return self._send(200, {"ok": n > 0, "msg": "已删除" if n else "删除失败"})
 
+        if path == "/api/set-status":
+            rid = (body.get("record_id") or "").strip()
+            status = (body.get("status") or "").strip()
+            if not rid or status not in ("Enable", "Disable"):
+                return self._send(200, {"ok": False, "msg": "参数不对"})
+            res = dns.update(RecordId=rid, DomainName=domain, New_Status=status)
+            ok = isinstance(res, dict) and res.get("code") == 0
+            return self._send(200, {"ok": ok,
+                                    "msg": ("已停用，阿里云同步生效" if status == "Disable" else "已启用，阿里云同步生效") if ok
+                                           else ((res or {}).get("msg") or "操作失败")})
+
         if path == "/api/ddns-update":
             rr = (body.get("rr") or "").strip()
             value = (body.get("value") or "").strip()
