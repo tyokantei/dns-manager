@@ -73,9 +73,10 @@ def load_store():
         s.setdefault("profiles", [])
         s.setdefault("templates", [])
         s.setdefault("notes", {})
+        s.setdefault("services", [])
         return s
     except Exception:
-        return {"profiles": [], "templates": list(DEFAULT_TEMPLATES), "notes": {}}
+        return {"profiles": [], "templates": list(DEFAULT_TEMPLATES), "notes": {}, "services": []}
 
 
 def save_store(s):
@@ -217,6 +218,22 @@ class Handler(BaseHTTPRequestHandler):
             notes = {k: v for k, v in (store.get("notes") or {}).items()
                      if k.startswith(domain + "|")}
             return self._send(200, {"ok": True, "notes": notes})
+        if path == "/api/services":
+            return self._send(200, {"ok": True, "services": store.get("services") or []})
+        if path == "/api/sync-status":
+            domain = (qs.get("domain") or [""])[0]
+            prof = profile_for_domain(store, domain)
+            if not prof:
+                return self._send(200, {"ok": False, "msg": "该域名没有对应的密钥档案"})
+            res = dns_client(prof).get_all(domain)
+            if res.get("code") == -1:
+                return self._send(200, {"ok": False, "msg": res.get("msg", "获取失败")})
+            by_rr = {}
+            for r in res["records"]:
+                by_rr.setdefault(r.get("RR", ""), []).append({
+                    "record_id": r.get("RecordId"), "status": r.get("Status", "Enable"),
+                    "type": r.get("Type"), "value": r.get("Value")})
+            return self._send(200, {"ok": True, "by_rr": by_rr})
         if path == "/api/records":
             domain = (qs.get("domain") or [""])[0]
             prof = profile_for_domain(store, domain)
@@ -285,7 +302,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/profiles/save":
             name = (body.get("name") or "").strip()
             if not name:
-                return self._send(200, {"ok": False, "msg": "档案名不能为空"})
+                _doms = [d.strip() for d in (body.get("domains") or []) if str(d).strip()]
+                name = _doms[0] if _doms else "默认档案"
             domains = [d.strip().lower() for d in (body.get("domains") or []) if str(d).strip()]
             existing = next((p for p in store["profiles"] if p["name"] == name), None)
             kid = (body.get("key_id") or "").strip()
@@ -348,6 +366,34 @@ class Handler(BaseHTTPRequestHandler):
             save_store(store)
             return self._send(200, {"ok": True, "msg": "用途已保存"})
 
+        if path == "/api/services/save":
+            svc = {
+                "domain": (body.get("domain") or "").strip(),
+                "rr": (body.get("rr") or "").strip(),
+                "intro": (body.get("intro") or "").strip(),
+                "lan_ip": (body.get("lan_ip") or "").strip(),
+                "lan_port": (body.get("lan_port") or "").strip(),
+                "type": (body.get("type") or "CNAME").strip(),
+                "value": (body.get("value") or "").strip(),
+            }
+            if not svc["domain"] or not svc["rr"]:
+                return self._send(200, {"ok": False, "msg": "主域名和前缀不能为空"})
+            if not svc["value"]:
+                svc["value"] = "tyokantei.3322.org" if svc["type"] == "CNAME" else svc["lan_ip"]
+            key = svc["domain"] + "|" + svc["rr"]
+            store["services"] = [s for s in (store.get("services") or [])
+                                 if s["domain"] + "|" + s["rr"] != key]
+            store["services"].append(svc)
+            save_store(store)
+            return self._send(200, {"ok": True, "msg": "项目已保存"})
+
+        if path == "/api/services/delete":
+            key = (body.get("domain") or "").strip() + "|" + (body.get("rr") or "").strip()
+            store["services"] = [s for s in (store.get("services") or [])
+                                 if s["domain"] + "|" + s["rr"] != key]
+            save_store(store)
+            return self._send(200, {"ok": True, "msg": "项目已删除（仅删面板清单，阿里云记录不动）"})
+
         # ---- 以下都需要目标域名 + 对应档案 ----
         domain = (body.get("domain") or "").strip()
         prof = profile_for_domain(store, domain)
@@ -401,6 +447,21 @@ class Handler(BaseHTTPRequestHandler):
             res = dns.delete(RR=rr, DomainName=domain, RecordId=rid)
             n = len((res or {}).get("record") or [])
             return self._send(200, {"ok": n > 0, "msg": "已删除" if n else "删除失败"})
+
+        if path == "/api/services/push":
+            rr = (body.get("rr") or "").strip()
+            svc = next((s for s in (store.get("services") or [])
+                        if s["domain"] == domain and s["rr"] == rr), None)
+            if not svc:
+                return self._send(200, {"ok": False, "msg": "项目不存在"})
+            existing = dns.search(DomainName=domain, RR=rr)["DomainRecords"]["Record"]
+            if existing:
+                return self._send(200, {"ok": True, "msg": "阿里云已有该前缀记录，已同步"})
+            res = dns.add(RR=rr, DomainName=domain, Type=svc.get("type") or "CNAME",
+                          Value=svc.get("value") or "", Line="default", TTL="600")
+            if isinstance(res, dict) and res.get("RequestId"):
+                return self._send(200, {"ok": True, "msg": "已推送到阿里云", "record_id": res.get("RecordId")})
+            return self._send(200, {"ok": False, "msg": (res or {}).get("Message") or (res or {}).get("msg") or "推送失败"})
 
         if path == "/api/set-status":
             rid = (body.get("record_id") or "").strip()

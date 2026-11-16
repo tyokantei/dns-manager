@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/root/dns-manager
-ExecStart=/opt/python3.10/bin/python3 /root/dns-manager/app.py --port 8550
+ExecStart=/usr/bin/python3 /root/dns-manager/app.py --port 400
 Restart=on-failure
 RestartSec=3
 

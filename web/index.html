@@ -58,8 +58,31 @@ th{color:var(--dim);font-weight:600}
 </header>
 <main>
   <div class="card">
+    <h2>服务项目（转发清单）
+      <button class="btn ghost sm" id="svcSyncBtn" style="float:right">同步阿里云</button>
+    </h2>
+    <div style="overflow-x:auto">
+    <table><thead><tr><th>域名</th><th>内容介绍</th><th>内网地址</th><th>阿里云</th><th>操作</th></tr></thead>
+    <tbody id="svcBody"><tr><td colspan="5" class="dim">加载中…</td></tr></tbody></table>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div><label>前缀（自定义）</label><input id="sRr" placeholder="如 dns"></div>
+      <div><label>内容介绍</label><input id="sIntro" placeholder="这个服务是干什么的"></div>
+      <div><label>内网 IP</label><input id="sIp" placeholder="192.168.31.144"></div>
+      <div><label>内网端口</label><input id="sPort" placeholder="400"></div>
+      <div><label>记录类型</label><select id="sType"><option>CNAME</option><option>A</option></select></div>
+      <div><label>记录值（CNAME 默认 DDNS 域名，可改）</label><input id="sValue" placeholder="tyokantei.3322.org"></div>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:8px">
+      <button class="btn" id="svcSaveBtn">保存项目</button>
+      <button class="btn ghost" id="svcClearBtn">清空表单</button>
+    </div>
+    <div class="msg" id="svcMsg"></div>
+  </div>
+
+  <div class="card">
     <h2>解析记录 <span class="dim" id="recCount"></span>
-      <button class="btn ghost sm" id="refreshBtn" style="float:right">刷新</button>
+      <button class="btn ghost sm" id="refreshBtn" style="float:right">同步阿里云</button>
     </h2>
     <input id="recFilter" placeholder="按前缀 / 类型 / 记录值过滤…">
     <div style="overflow-x:auto;margin-top:8px">
@@ -155,7 +178,7 @@ th{color:var(--dim);font-weight:600}
 
 <script>
 const $=id=>document.getElementById(id);
-let editingId=null, records=[], templates=[], profiles=[], notes={};
+let editingId=null, records=[], templates=[], profiles=[], notes={}, services=[], syncMap=null;
 async function api(path, body){
   const opt={method: body? 'POST':'GET', headers:{'Content-Type':'application/json'}};
   if(body) opt.body=JSON.stringify(body);
@@ -188,7 +211,8 @@ async function boot(){
   if(!me.authed) return showGate(false);
   showApp();
   await loadProfiles(); renderTemplates(await loadTemplates());
-  if(domain()) loadRecords();
+  await loadServices();
+  if(domain()){ loadRecords(); loadSyncStatus(); }
 }
 
 async function loadProfiles(){
@@ -319,9 +343,68 @@ $('tplSaveBtn').onclick=async()=>{
   const r=await api('/api/templates/save',v); msg('formMsg',r.msg,r.ok);
   if(r.ok) renderTemplates(await loadTemplates());
 };
+async function loadServices(){
+  const r=await api('/api/services'); services=r.services||[]; renderServices();
+}
+async function loadSyncStatus(){
+  const d=domain(); syncMap=null;
+  if(!d){ renderServices(); return; }
+  try{
+    const r=await api('/api/sync-status?domain='+encodeURIComponent(d));
+    if(r.ok) syncMap=r.by_rr||{};
+  }catch(e){}
+  renderServices();
+}
+function renderServices(){
+  const d=domain();
+  const list=services.filter(s=>!d||s.domain===d);
+  const tb=$('svcBody'); tb.innerHTML='';
+  if(!list.length){ tb.innerHTML='<tr><td colspan="5" class="dim">还没有项目，在下面表单里加第一个</td></tr>'; return; }
+  list.forEach(s=>{
+    const tr=document.createElement('tr');
+    const fq=(s.rr?s.rr+'.':'')+s.domain;
+    const addr=(s.lan_ip||'')+(s.lan_port?':'+s.lan_port:'');
+    let stat='—', rec=null;
+    if(syncMap){ const recs=syncMap[s.rr]||[]; rec=recs[0]||null;
+      stat= rec? (rec.status==='Disable'?'已同步 · 已停用':'已同步 · 启用中') : '未同步'; }
+    [fq, s.intro||'—', addr||'—', stat].forEach(v=>{ const td=document.createElement('td'); td.textContent=v; tr.appendChild(td); });
+    const td=document.createElement('td');
+    if(syncMap&&!rec){
+      const pb=document.createElement('button'); pb.className='btn sm'; pb.textContent='推送到阿里云';
+      pb.onclick=async()=>{ const r=await api('/api/services/push',{domain:s.domain,rr:s.rr});
+        msg('svcMsg',r.msg,r.ok); if(r.ok){ loadSyncStatus(); loadRecords(); } };
+      td.append(pb,document.createTextNode(' '));
+    }
+    if(syncMap&&rec){
+      const sb=document.createElement('button'); sb.className='btn ghost sm';
+      const isDis=rec.status==='Disable'; sb.textContent=isDis?'启用':'停用';
+      sb.onclick=async()=>{ const to=isDis?'Enable':'Disable';
+        if(to==='Disable'&&!confirm('停用 '+fq+' ？阿里云同步停用。')) return;
+        const r=await api('/api/set-status',{domain:s.domain,record_id:rec.record_id,status:to});
+        msg('svcMsg',r.msg,r.ok); if(r.ok){ loadSyncStatus(); loadRecords(); } };
+      td.append(sb,document.createTextNode(' '));
+    }
+    const eb=document.createElement('button'); eb.className='btn ghost sm'; eb.textContent='编辑';
+    eb.onclick=()=>{ $('sRr').value=s.rr; $('sIntro').value=s.intro||''; $('sIp').value=s.lan_ip||'';
+      $('sPort').value=s.lan_port||''; $('sType').value=s.type||'CNAME'; $('sValue').value=s.value||''; };
+    const db=document.createElement('button'); db.className='btn danger sm'; db.textContent='删除';
+    db.onclick=async()=>{ if(!confirm('从清单删除 '+fq+' ？（只删面板清单，阿里云记录不动）')) return;
+      const r=await api('/api/services/delete',{domain:s.domain,rr:s.rr}); msg('svcMsg',r.msg,r.ok); if(r.ok) loadServices(); };
+    td.append(eb,document.createTextNode(' '),db); tr.appendChild(td); tb.appendChild(tr);
+  });
+}
+$('svcSaveBtn').onclick=async()=>{
+  const d=domain(); if(!d) return msg('svcMsg','先在顶部选择主域名',false);
+  const r=await api('/api/services/save',{domain:d,rr:$('sRr').value.trim(),intro:$('sIntro').value.trim(),
+    lan_ip:$('sIp').value.trim(),lan_port:$('sPort').value.trim(),type:$('sType').value,value:$('sValue').value.trim()});
+  msg('svcMsg',r.msg,r.ok); if(r.ok){ loadServices(); loadSyncStatus(); }
+};
+$('svcClearBtn').onclick=()=>{ ['sRr','sIntro','sIp','sPort','sValue'].forEach(id=>$(id).value=''); };
+$('svcSyncBtn').onclick=()=>{ loadSyncStatus(); loadRecords(); msg('svcMsg','已从阿里云同步最新状态',true); };
+
 $('refreshBtn').onclick=loadRecords;
 $('recFilter').oninput=renderRecords;
-$('domainSel').onchange=()=>{ endEdit(); preview(); loadRecords(); };
+$('domainSel').onchange=()=>{ endEdit(); preview(); loadRecords(); loadServices(); loadSyncStatus(); };
 ['fRr','fType','fValue','fLine','fTtl'].forEach(id=>{ $(id).addEventListener('input',preview); $(id).addEventListener('change',preview); });
 
 $('batchBtn').onclick=async()=>{

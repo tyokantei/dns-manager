@@ -33,11 +33,11 @@
 
    ```bash
    cd ~/dns-manager
-   /opt/python3.10/bin/python3 app.py --port 8550
+   /opt/python3.10/bin/python3 app.py --port 400
    ```
 
    首次启动会自动生成自签名证书（cert.pem / key.pem）。
-3. 浏览器打开 `https://<edge640 的局域网 IP>:8550`，证书警告点「继续」，
+3. 浏览器打开 `https://<edge640 的局域网 IP>:400`，证书警告点「继续」，
    先设置面板密码，然后到页面底部「设置」里添加密钥档案
    （建议用只授 DNS 权限的 RAM AccessKey）。
 4. 常驻运行（可选）：改 `dns-manager.service` 里的路径与用户，
